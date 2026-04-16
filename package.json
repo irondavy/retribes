@@ -7,12 +7,14 @@
     "dev": "vite",
     "party": "npx partykit dev",
     "build": "tsc && vite build",
+    "start": "serve dist -s -l 8080",
     "preview": "vite preview"
   },
   "dependencies": {
     "@types/three": "^0.183.1",
     "partykit": "^0.0.115",
     "partysocket": "^1.1.16",
+    "serve": "^14.2.6",
     "three": "^0.183.2",
     "typescript": "^6.0.2",
     "vite": "^8.0.8"
