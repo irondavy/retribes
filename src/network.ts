@@ -31,7 +31,7 @@ export class NetworkManager {
 
   constructor(mapType: MapType) {
     const isDev = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-    const host = isDev ? "localhost:1999" : "retribes.davidcole.partykit.dev";
+    const host = isDev ? "localhost:1999" : "retribes.irondavy.partykit.dev";
 
     this.socket = new PartySocket({
       host,
