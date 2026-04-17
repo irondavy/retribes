@@ -1,5 +1,5 @@
 import type { GameTuning, MapType } from "./constants";
-import { tuning, tuningDefaults, resetTuning, saveTuning, saveAsDefaults } from "./constants";
+import { tuning, tuningDefaults, resetTuning, saveTuning, saveAsDefaults, PRESETS, applyPreset } from "./constants";
 import type { PlayerController } from "./player";
 
 const mapChangeListeners: Array<(mapType: MapType) => void> = [];
@@ -64,6 +64,11 @@ const CAMERA_MODES: { value: string; label: string }[] = [
   { value: "velocity", label: "Velocity-gated spring" },
   { value: "damping", label: "Roll damping" },
   { value: "blend+vel", label: "Blend + velocity + dead zone" },
+  { value: "surface", label: "Surface normal (grounded)" },
+  { value: "hybrid", label: "Hybrid (surface + blend)" },
+  { value: "trajectory", label: "Trajectory (felt forces)" },
+  { value: "horizon-lock", label: "Horizon lock (hard)" },
+  { value: "predictive", label: "Predictive (look-ahead)" },
 ];
 
 const GRAPPLE_MODES: { value: string; label: string }[] = [
@@ -111,6 +116,8 @@ const SECTIONS: Section[] = [
       { key: "jetEnergyDrain", label: "Energy drain / s", min: 5, max: 60, step: 1 },
       { key: "jetEnergyRegen", label: "Energy regen / s", min: 5, max: 40, step: 1 },
       { key: "jetForwardBias", label: "Forward bias", min: 0, max: 0.5, step: 0.01 },
+      { key: "jetRegenDelay", label: "Regen delay (s)", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
+      { key: "jetStartupTime", label: "Startup delay (s)", min: 0, max: 0.1, step: 0.005, format: (v: number) => v.toFixed(3) },
     ],
   },
   {
@@ -129,6 +136,7 @@ const SECTIONS: Section[] = [
       { key: "grappleConnectBoost", label: "Connect boost", min: 0, max: 50, step: 1 },
       { key: "grappleConnectUpBias", label: "Connect up bias", min: 0, max: 30, step: 1 },
       { key: "grappleAutoDetachRadius", label: "Auto-detach dist", min: 1, max: 20, step: 1 },
+      { key: "grappleCameraPull", label: "Camera pull", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
     ],
   },
   {
@@ -166,6 +174,13 @@ const SECTIONS: Section[] = [
       { key: "landingAngleBoost", label: "Landing align boost", min: 0, max: 3, step: 0.1 },
       { key: "landingAnglePenalty", label: "Landing align penalty", min: 0, max: 3, step: 0.1 },
       { key: "skiGroundAdherence", label: "Ski ground adherence", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
+      { key: "airDrag", label: "Air drag", min: 0, max: 0.5, step: 0.01, format: (v: number) => v.toFixed(2) },
+      { key: "slopeSpeedBonus", label: "Slope speed bonus", min: 0, max: 3, step: 0.1 },
+      { key: "turnInertia", label: "Turn inertia", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
+      { key: "airControlSpeedReduction", label: "Air ctrl speed decay", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
+      { key: "landingCameraDip", label: "Landing camera dip", min: 0, max: 5, step: 0.1 },
+      { key: "chainBonusWindow", label: "Chain bonus window (s)", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
+      { key: "chainBonusMultiplier", label: "Chain bonus per link", min: 0, max: 0.2, step: 0.01, format: (v: number) => v.toFixed(2) },
     ],
   },
   {
@@ -454,6 +469,38 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   mapRow.appendChild(mapLabel);
   mapRow.appendChild(mapSelect);
   rowsEl.appendChild(mapRow);
+
+  // --- Preset selector ---
+  const presetRow = document.createElement("div");
+  presetRow.className = "tune-row";
+  presetRow.style.marginBottom = "12px";
+  const presetLabel = document.createElement("label");
+  const presetName = document.createElement("span");
+  presetName.className = "tune-name";
+  presetName.textContent = "Preset";
+  presetLabel.appendChild(presetName);
+
+  const presetSelect = document.createElement("select");
+  for (const p of PRESETS) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.label;
+    presetSelect.appendChild(opt);
+  }
+
+  presetSelect.addEventListener("change", () => {
+    const prevMap = tuning.mapType;
+    applyPreset(presetSelect.value);
+    syncUIFromTuning();
+    if (tuning.mapType !== prevMap) {
+      for (const fn of mapChangeListeners) fn(tuning.mapType);
+    }
+    player.snapToGround();
+  });
+
+  presetRow.appendChild(presetLabel);
+  presetRow.appendChild(presetSelect);
+  rowsEl.appendChild(presetRow);
 
   // --- Collapsible sections ---
   const allDropdownInputs: { key: keyof GameTuning; select: HTMLSelectElement }[] = [];

@@ -150,6 +150,8 @@ export class VisualSystem {
   private landingSquashTimer = 0;
   private landingSquashAmount = 0;
   private prevSpeed = 0;
+  private landingDipTimer = 0;
+  private landingDipAmount = 0;
 
   /** Current impact flash strength (0–1), decaying. Used by HUD vignette. */
   get impactFlash(): number {
@@ -332,6 +334,18 @@ export class VisualSystem {
       this.camera.updateProjectionMatrix();
     } else {
       this._impactIntensity = 0;
+    }
+
+    // Landing camera dip
+    if (player.justLanded && tuning.landingCameraDip > 0) {
+      this.landingDipTimer = 0.2;
+      this.landingDipAmount = Math.min(1.5, player.lastImpact * 0.05) * tuning.landingCameraDip;
+    }
+    if (this.landingDipTimer > 0) {
+      this.landingDipTimer -= dt;
+      const t = Math.max(0, this.landingDipTimer / 0.2);
+      const dip = this.landingDipAmount * Math.sin(t * Math.PI);
+      this.camera.position.y -= dip;
     }
 
     // Sky dome follows camera

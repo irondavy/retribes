@@ -6,7 +6,12 @@ export type GravityCameraMode =
   | "blend"       // spring toward blended target up (smooth through transition)
   | "velocity"    // spring only when near ground / low vertical speed
   | "damping"     // damps roll rate instead of seeking a target
-  | "blend+vel";  // blend + velocity gating combined
+  | "blend+vel"   // blend + velocity gating combined
+  | "surface"     // ground normal when grounded, gravity when airborne
+  | "hybrid"      // ground normal when grounded, blended when airborne
+  | "trajectory"  // up derived from non-gravitational forces (felt acceleration)
+  | "horizon-lock" // hard roll lock to current gravity direction
+  | "predictive"; // anticipates gravity change based on trajectory
 export type MapType = "flat" | "sphere";
 export type GrappleMode = "winch" | "pendulum";
 
@@ -79,9 +84,20 @@ export interface GameTuning {
   landingAngleBoost: number;
   landingAnglePenalty: number;
   skiGroundAdherence: number;
+
+  jetRegenDelay: number;
+  airDrag: number;
+  slopeSpeedBonus: number;
+  chainBonusWindow: number;
+  chainBonusMultiplier: number;
+  grappleCameraPull: number;
+  airControlSpeedReduction: number;
+  landingCameraDip: number;
+  turnInertia: number;
+  jetStartupTime: number;
 }
 
-const _builtinDefaults: GameTuning = {
+export const _builtinDefaults: GameTuning = {
   mapType: "flat",
   gravity: 20,
   skiFriction: 0.001,
@@ -149,6 +165,17 @@ const _builtinDefaults: GameTuning = {
   landingAngleBoost: 1.0,
   landingAnglePenalty: 1.0,
   skiGroundAdherence: 0,
+
+  jetRegenDelay: 0,
+  airDrag: 0,
+  slopeSpeedBonus: 0,
+  chainBonusWindow: 0,
+  chainBonusMultiplier: 0,
+  grappleCameraPull: 0,
+  airControlSpeedReduction: 0,
+  landingCameraDip: 0,
+  turnInertia: 0,
+  jetStartupTime: 0,
 };
 
 const STORAGE_KEY = "retribes_tuning";
@@ -184,4 +211,133 @@ export function saveAsDefaults(): void {
     localStorage.setItem(DEFAULTS_KEY, JSON.stringify(tuningDefaults));
     localStorage.removeItem(STORAGE_KEY);
   } catch { /* storage full / blocked */ }
+}
+
+export interface Preset {
+  id: string;
+  label: string;
+  values: Partial<GameTuning>;
+}
+
+export const PRESETS: Preset[] = [
+  {
+    id: "default",
+    label: "Default",
+    values: {},
+  },
+  {
+    id: "tribes",
+    label: "Tribes purist",
+    values: {
+      enableSlopeFriction: true,
+      enableLandingAngle: true,
+      landingAngleBoost: 1,
+      landingAnglePenalty: 1,
+      skiGroundAdherence: 2,
+      skiCamSmoothing: 0.5,
+      gravityCamera: "surface",
+      jetRegenDelay: 0.4,
+      airDrag: 0.15,
+      slopeSpeedBonus: 1.5,
+    },
+  },
+  {
+    id: "momentum",
+    label: "Momentum",
+    values: {
+      grappleMode: "pendulum",
+      grappleReleaseBoost: 10,
+      skiEntryBoost: 5,
+      strafeRollAngle: 3,
+      enableFovRateScaling: true,
+      enableSpeedLines: true,
+      speedLineIntensity: 0.7,
+      gravityCamera: "trajectory",
+      chainBonusWindow: 2,
+      chainBonusMultiplier: 0.08,
+      grappleCameraPull: 0.4,
+      airControlSpeedReduction: 0.5,
+    },
+  },
+  {
+    id: "weighted",
+    label: "Weighted",
+    values: {
+      coyoteTime: 100,
+      enableJetKick: true,
+      landingSquashFov: 2,
+      landingRecoveryTime: 0.15,
+      slopeTiltIntensity: 2,
+      impactShakeIntensity: 1.5,
+      impactFovPunch: 1.5,
+      impactVignette: 1.5,
+      landingCameraDip: 2,
+      turnInertia: 0.5,
+      jetStartupTime: 0.04,
+    },
+  },
+  {
+    id: "full-juice",
+    label: "Full juice",
+    values: {
+      grappleMode: "pendulum",
+      grappleReleaseBoost: 10,
+      skiEntryBoost: 5,
+      strafeRollAngle: 3,
+      enableFovRateScaling: true,
+      enableSpeedLines: true,
+      speedLineIntensity: 0.7,
+      gravityCamera: "trajectory",
+      coyoteTime: 100,
+      enableJetKick: true,
+      landingSquashFov: 2,
+      landingRecoveryTime: 0.15,
+      slopeTiltIntensity: 2,
+      impactShakeIntensity: 1.5,
+      impactFovPunch: 1.5,
+      impactVignette: 1.5,
+      enableSlopeFriction: true,
+      enableLandingAngle: true,
+      skiGroundAdherence: 1.5,
+      skiCamSmoothing: 0.3,
+      chainBonusWindow: 2,
+      chainBonusMultiplier: 0.08,
+      grappleCameraPull: 0.4,
+      landingCameraDip: 1.5,
+      turnInertia: 0.3,
+      slopeSpeedBonus: 1,
+      airDrag: 0.05,
+    },
+  },
+  {
+    id: "competitive",
+    label: "Clean competitive",
+    values: {
+      coyoteTime: 80,
+      enableSlopeFriction: true,
+      enableLandingAngle: true,
+      skiGroundAdherence: 1.5,
+      grappleReleaseBoost: 5,
+      gravityCamera: "horizon-lock",
+      jetRegenDelay: 0.3,
+      airDrag: 0.1,
+      airControlSpeedReduction: 0.4,
+    },
+  },
+  {
+    id: "custom",
+    label: "Custom defaults",
+    values: {},
+  },
+];
+
+export function applyPreset(id: string): void {
+  if (id === "custom") {
+    Object.assign(tuning, tuningDefaults);
+  } else {
+    const preset = PRESETS.find(p => p.id === id);
+    if (!preset) return;
+    Object.assign(tuning, _builtinDefaults, preset.values);
+  }
+  saveTuning();
 }
