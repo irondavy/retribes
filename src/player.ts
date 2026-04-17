@@ -18,6 +18,15 @@ export class PlayerController {
 
   /** Absorbed normal velocity on the most recent collision (m/s). Resets each frame. */
   lastImpact = 0;
+  /** Set to true on the frame grounded transitions from false→true. */
+  justLanded = false;
+
+  private timeSinceGrounded = 0;
+  private prevSkiing = false;
+  private prevJetting = false;
+  private landingRecoveryTimer = 0;
+  private smoothedCamY = 0;
+  private smoothedCamYInit = false;
 
   /** +1 = normal (down), -1 = inverted (up toward ceiling). Only used in flat mode. */
   gravitySign = 1;
@@ -81,6 +90,7 @@ export class PlayerController {
   private readonly _tv5 = new THREE.Vector3();
   private readonly _tv6 = new THREE.Vector3();
   private readonly _tv7 = new THREE.Vector3();
+  private readonly _tv8 = new THREE.Vector3();
   private readonly _tq0 = new THREE.Quaternion();
   private readonly _tq1 = new THREE.Quaternion();
   private readonly _tm0 = new THREE.Matrix4();
@@ -219,10 +229,118 @@ export class PlayerController {
 
   update(dt: number, input: InputState): void {
     this.lastImpact = 0;
+    const wasGrounded = this.grounded;
+    const wasSkiing = this.prevSkiing;
+    const wasGrappled = this.grappleAttached;
+
     if (this.mapType === "sphere") {
       this.updateSphere(dt, input);
     } else {
       this.updateFlat(dt, input);
+    }
+
+    this.postUpdate(dt, input, wasGrounded, wasSkiing, wasGrappled);
+  }
+
+  private postUpdate(
+    dt: number, input: InputState,
+    wasGrounded: boolean, wasSkiing: boolean, wasGrappled: boolean,
+  ): void {
+    // --- justLanded detection ---
+    this.justLanded = this.grounded && !wasGrounded;
+
+    // --- Coyote time ---
+    if (this.grounded) {
+      this.timeSinceGrounded = 0;
+    } else {
+      this.timeSinceGrounded += dt * 1000; // track in ms
+    }
+
+    // --- Ski entry boost ---
+    if (this.skiing && !wasSkiing && this.grounded && tuning.skiEntryBoost > 0) {
+      const spd = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+      if (spd > 1) {
+        const scale = tuning.skiEntryBoost / spd;
+        this.velocity.x += this.velocity.x * scale;
+        this.velocity.z += this.velocity.z * scale;
+      } else if (this.forward.lengthSq() > 0.001) {
+        this.velocity.x += this.forward.x * tuning.skiEntryBoost;
+        this.velocity.z += this.forward.z * tuning.skiEntryBoost;
+      }
+    }
+    this.prevSkiing = this.skiing;
+    this.prevJetting = this.jetting;
+
+    // --- Grapple release boost ---
+    if (wasGrappled && !this.grappleAttached && tuning.grappleReleaseBoost > 0) {
+      const spd = this.velocity.length();
+      if (spd > 0.1) {
+        this.velocity.addScaledVector(
+          this._tv0.copy(this.velocity).divideScalar(spd),
+          tuning.grappleReleaseBoost,
+        );
+      }
+    }
+
+    // --- Landing recovery ---
+    if (this.justLanded && tuning.landingRecoveryTime > 0 && this.lastImpact > tuning.impactThreshold) {
+      this.landingRecoveryTimer = tuning.landingRecoveryTime;
+    }
+    if (this.landingRecoveryTimer > 0) {
+      this.landingRecoveryTimer -= dt;
+      const dampen = 0.3;
+      this.velocity.x *= dampen + (1 - dampen) * (1 - this.landingRecoveryTimer / tuning.landingRecoveryTime);
+      this.velocity.z *= dampen + (1 - dampen) * (1 - this.landingRecoveryTimer / tuning.landingRecoveryTime);
+    }
+
+    // --- Camera roll on strafe ---
+    if (tuning.strafeRollAngle > 0) {
+      let strafeInput = 0;
+      if (input.isDown("KeyD")) strafeInput += 1;
+      if (input.isDown("KeyA")) strafeInput -= 1;
+      const targetRoll = -strafeInput * tuning.strafeRollAngle * Math.PI / 180 *
+        Math.min(1, this.speed / 30);
+      const camFwd = this._tv0.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      const currentUp = this._tv1.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      const currentRoll = Math.atan2(
+        currentUp.dot(this._tv2.crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize()),
+        currentUp.dot(new THREE.Vector3(0, 1, 0)),
+      );
+      const rollDiff = targetRoll - currentRoll;
+      if (Math.abs(rollDiff) > 0.001) {
+        const correction = rollDiff * Math.min(1, 8 * dt);
+        this._tq0.setFromAxisAngle(camFwd.set(0, 0, -1).applyQuaternion(this.camera.quaternion), correction);
+        this.camera.quaternion.premultiply(this._tq0);
+        this.camera.quaternion.normalize();
+      }
+    }
+
+    // --- Slope camera tilt ---
+    if (tuning.slopeTiltIntensity > 0 && this.grounded && this.skiing) {
+      const slopeAngle = Math.acos(Math.min(1, Math.abs(this.groundNormal.y)));
+      const tiltTarget = slopeAngle * tuning.slopeTiltIntensity;
+      const moveDot = this.velocity.x * this.groundNormal.x + this.velocity.z * this.groundNormal.z;
+      const sign = moveDot > 0 ? -1 : 1;
+      const camRight = this._tv0.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+      const correction = sign * tiltTarget * Math.min(1, 4 * dt);
+      if (Math.abs(correction) > 0.0001) {
+        this._tq0.setFromAxisAngle(camRight, correction);
+        this.camera.quaternion.premultiply(this._tq0);
+        this.camera.quaternion.normalize();
+      }
+    }
+
+    // --- Ski camera vertical smoothing ---
+    if (tuning.skiCamSmoothing > 0 && this.grounded && this.skiing) {
+      if (!this.smoothedCamYInit) {
+        this.smoothedCamY = this.camera.position.y;
+        this.smoothedCamYInit = true;
+      }
+      const alpha = Math.pow(tuning.skiCamSmoothing, dt * 60);
+      this.smoothedCamY = alpha * this.smoothedCamY + (1 - alpha) * this.camera.position.y;
+      this.camera.position.y = this.smoothedCamY;
+    } else {
+      this.smoothedCamYInit = false;
     }
   }
 
@@ -275,15 +393,20 @@ export class PlayerController {
       if (this.energy <= 0) { this.energy = 0; this.jetting = false; }
     }
     if (this.jetting) {
-      if (this.grounded) {
+      const coyoteGrounded = this.grounded || this.timeSinceGrounded < tuning.coyoteTime;
+      if (coyoteGrounded) {
         const velOutward = this.velocity.dot(outward);
         if (velOutward > 0) {
           this.velocity.addScaledVector(outward, -velOutward);
         }
       }
-      this.velocity.addScaledVector(towardCenter, jetThrust * dt);
+      let thrust = jetThrust;
+      if (tuning.enableJetKick && !this.prevJetting) {
+        thrust *= 2.5;
+      }
+      this.velocity.addScaledVector(towardCenter, thrust * dt);
       if (hasInput) {
-        this.velocity.addScaledVector(wishDir, jetThrust * jetForwardBias * dt);
+        this.velocity.addScaledVector(wishDir, thrust * jetForwardBias * dt);
       }
     } else {
       this.energy = Math.min(100, this.energy + jetEnergyRegen * dt);
@@ -302,7 +425,17 @@ export class PlayerController {
           this.velocity.addScaledVector(wishDir, skiSteerFactor * walkSpeed * dt);
         }
 
-        const skiF = Math.exp(-skiFriction * dt);
+        let effectiveSF = skiFriction;
+        if (tuning.enableSlopeFriction) {
+          const tangVel = this._tv7.copy(this.velocity).addScaledVector(outward, -this.velocity.dot(outward));
+          const tLen = tangVel.length();
+          if (tLen > 0.1) {
+            const slopeDir = this._tv8.copy(slopeForce).normalize();
+            const slopeAlign = tangVel.dot(slopeDir) / tLen;
+            effectiveSF *= 1 - slopeAlign * 0.6;
+          }
+        }
+        const skiF = Math.exp(-effectiveSF * dt);
         const radialSpeed = this.velocity.dot(outward);
         this.velocity.addScaledVector(outward, -radialSpeed);
         this.velocity.multiplyScalar(skiF);
@@ -377,6 +510,7 @@ export class PlayerController {
             this.lastImpact = Math.max(this.lastImpact, velDotOutward);
             this.velocity.addScaledVector(dirFromCenter, -velDotOutward);
           }
+          this.applyLandingAngle(this._tv6.copy(dirFromCenter).negate());
         }
         this.grounded = true;
       } else {
@@ -517,14 +651,21 @@ export class PlayerController {
       if (this.energy <= 0) { this.energy = 0; this.jetting = false; }
     }
     if (this.jetting) {
-      if (this.grounded) {
+      const coyoteGrounded = this.grounded || this.timeSinceGrounded < tuning.coyoteTime;
+      if (coyoteGrounded) {
         if (gravSign > 0 && this.velocity.y < 0) this.velocity.y = 0;
         if (gravSign < 0 && this.velocity.y > 0) this.velocity.y = 0;
       }
-      this.velocity.y += gravSign * jetThrust * dt;
+
+      // Variable jet thrust: kick on first frame, sustain after
+      let thrust = jetThrust;
+      if (tuning.enableJetKick && !this.prevJetting) {
+        thrust *= 2.5;
+      }
+      this.velocity.y += gravSign * thrust * dt;
       if (hasInput) {
-        this.velocity.x += wishDir.x * jetThrust * jetForwardBias * dt;
-        this.velocity.z += wishDir.z * jetThrust * jetForwardBias * dt;
+        this.velocity.x += wishDir.x * thrust * jetForwardBias * dt;
+        this.velocity.z += wishDir.z * thrust * jetForwardBias * dt;
       }
     } else {
       this.energy = Math.min(100, this.energy + jetEnergyRegen * dt);
@@ -543,7 +684,17 @@ export class PlayerController {
           this.velocity.addScaledVector(wishDir, skiSteerFactor * walkSpeed * dt);
         }
 
-        const skiF = Math.exp(-skiFriction * dt);
+        let effectiveFriction = skiFriction;
+        if (tuning.enableSlopeFriction) {
+          const hSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+          if (hSpeed > 0.1) {
+            const slopeAlignX = slopeForce.x / hSpeed * (this.velocity.x / hSpeed);
+            const slopeAlignZ = slopeForce.z / hSpeed * (this.velocity.z / hSpeed);
+            const slopeAlign = slopeAlignX + slopeAlignZ; // -1=uphill, +1=downhill
+            effectiveFriction *= 1 - slopeAlign * 0.6; // downhill: 40% friction, uphill: 160%
+          }
+        }
+        const skiF = Math.exp(-effectiveFriction * dt);
         this.velocity.x *= skiF;
         this.velocity.z *= skiF;
       } else {
@@ -602,15 +753,23 @@ export class PlayerController {
     let snapZone: boolean;
     let snappedY: number;
 
+    // Terrain stickiness: extend snap range when skiing at speed
+    let effectiveSnap = groundSnapThreshold;
+    if (tuning.skiGroundAdherence > 0 && this.skiing && this.grounded) {
+      const hSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+      const speedFactor = Math.min(1, hSpeed / 60);
+      effectiveSnap += tuning.skiGroundAdherence * speedFactor;
+    }
+
     if (onCeiling) {
       const headY = this.position.y + playerHeight;
       penetrating = headY > surfaceY;
-      snapZone = headY >= surfaceY - groundSnapThreshold;
+      snapZone = headY >= surfaceY - effectiveSnap;
       snappedY = surfaceY - playerHeight;
     } else {
       const feetY = this.position.y - playerHeight;
       penetrating = feetY < surfaceY;
-      snapZone = feetY <= surfaceY + groundSnapThreshold;
+      snapZone = feetY <= surfaceY + effectiveSnap;
       snappedY = surfaceY + playerHeight;
     }
 
@@ -638,6 +797,7 @@ export class PlayerController {
           this.lastImpact = Math.max(this.lastImpact, Math.abs(velDotN));
           this.velocity.addScaledVector(this.groundNormal, -velDotN);
         }
+        this.applyLandingAngle(this._tv4.set(0, -gravSign, 0));
       }
       this.grounded = true;
     } else {
@@ -677,6 +837,31 @@ export class PlayerController {
     }
 
     this.camera.position.copy(this.position);
+  }
+
+  private applyLandingAngle(gravDir: THREE.Vector3): void {
+    if (!tuning.enableLandingAngle) return;
+    const speed = this.velocity.length();
+    if (speed < 2) return;
+
+    // Slope's downhill direction: gravity projected onto surface plane
+    const normalDot = gravDir.dot(this.groundNormal);
+    const downhill = this._tv0.copy(gravDir).addScaledVector(this.groundNormal, -normalDot);
+    const downhillLen = downhill.length();
+    if (downhillLen < 0.01) return; // flat surface
+    downhill.divideScalar(downhillLen);
+
+    // How aligned is velocity with the downhill direction?
+    const velDir = this._tv1.copy(this.velocity).divideScalar(speed);
+    const alignment = velDir.dot(downhill); // -1 = against slope, +1 = with slope
+
+    if (alignment > 0.1) {
+      const factor = 1 + alignment * downhillLen * 2 * tuning.landingAngleBoost;
+      this.velocity.multiplyScalar(factor);
+    } else if (alignment < -0.1) {
+      const factor = 1 + alignment * downhillLen * 2 * tuning.landingAnglePenalty;
+      this.velocity.multiplyScalar(Math.max(0.3, factor));
+    }
   }
 
   private resolveStructureCollision(playerHeight: number): void {

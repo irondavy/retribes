@@ -147,6 +147,10 @@ export class VisualSystem {
   private readonly impactOffset = new THREE.Vector3();
   private impactFovKick = 0;
 
+  private landingSquashTimer = 0;
+  private landingSquashAmount = 0;
+  private prevSpeed = 0;
+
   /** Current impact flash strength (0–1), decaying. Used by HUD vignette. */
   get impactFlash(): number {
     return this.impactTimer > 0 ? this._impactIntensity * (this.impactTimer / 0.35) : 0;
@@ -274,14 +278,33 @@ export class VisualSystem {
     }
 
     // FOV scaling
+    let fovTarget = 90;
     if (tuning.enableFovScaling) {
-      const target = Math.min(120, 90 + player.speed * tuning.fovScaleAmount);
-      this.currentFov += (target - this.currentFov) * Math.min(1, 5 * dt);
-    } else {
-      this.currentFov += (90 - this.currentFov) * Math.min(1, 5 * dt);
+      fovTarget = Math.min(120, 90 + player.speed * tuning.fovScaleAmount);
     }
-    if (Math.abs(this.camera.fov - this.currentFov) > 0.01) {
-      this.camera.fov = this.currentFov;
+    let fovLerpRate = 5;
+    if (tuning.enableFovRateScaling) {
+      const accelerating = player.speed > this.prevSpeed + 0.5;
+      fovLerpRate = accelerating ? 10 : 2;
+    }
+    this.currentFov += (fovTarget - this.currentFov) * Math.min(1, fovLerpRate * dt);
+    this.prevSpeed = player.speed;
+
+    // Landing squash FOV
+    if (player.justLanded && tuning.landingSquashFov > 0) {
+      this.landingSquashTimer = 0.15;
+      this.landingSquashAmount = Math.min(6, player.lastImpact * 0.15) * tuning.landingSquashFov;
+    }
+    let squashFov = 0;
+    if (this.landingSquashTimer > 0) {
+      this.landingSquashTimer -= dt;
+      const t = Math.max(0, this.landingSquashTimer / 0.15);
+      squashFov = this.landingSquashAmount * Math.sin(t * Math.PI);
+    }
+
+    const finalFov = this.currentFov + squashFov;
+    if (Math.abs(this.camera.fov - finalFov) > 0.01) {
+      this.camera.fov = finalFov;
       this.camera.updateProjectionMatrix();
     }
 
@@ -305,7 +328,7 @@ export class VisualSystem {
       this.camera.position.add(this.impactOffset);
 
       const fovKick = this.impactFovKick * t;
-      this.camera.fov = this.currentFov - fovKick;
+      this.camera.fov = this.currentFov + squashFov - fovKick;
       this.camera.updateProjectionMatrix();
     } else {
       this._impactIntensity = 0;

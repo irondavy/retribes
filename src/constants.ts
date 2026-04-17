@@ -60,6 +60,25 @@ export interface GameTuning {
   impactShakeIntensity: number;
   impactFovPunch: number;
   impactVignette: number;
+
+  // Feel
+  coyoteTime: number;
+  landingSquashFov: number;
+  skiEntryBoost: number;
+  strafeRollAngle: number;
+  slopeTiltIntensity: number;
+  enableSpeedLines: boolean;
+  speedLineIntensity: number;
+  grappleReleaseBoost: number;
+  enableJetKick: boolean;
+  enableSlopeFriction: boolean;
+  landingRecoveryTime: number;
+  skiCamSmoothing: number;
+  enableFovRateScaling: boolean;
+  enableLandingAngle: boolean;
+  landingAngleBoost: number;
+  landingAnglePenalty: number;
+  skiGroundAdherence: number;
 }
 
 const _builtinDefaults: GameTuning = {
@@ -112,6 +131,24 @@ const _builtinDefaults: GameTuning = {
   impactShakeIntensity: 1.0,
   impactFovPunch: 1.0,
   impactVignette: 1.0,
+
+  coyoteTime: 0,
+  landingSquashFov: 0,
+  skiEntryBoost: 0,
+  strafeRollAngle: 0,
+  slopeTiltIntensity: 0,
+  enableSpeedLines: false,
+  speedLineIntensity: 0.5,
+  grappleReleaseBoost: 0,
+  enableJetKick: false,
+  enableSlopeFriction: false,
+  landingRecoveryTime: 0,
+  skiCamSmoothing: 0,
+  enableFovRateScaling: false,
+  enableLandingAngle: false,
+  landingAngleBoost: 1.0,
+  landingAnglePenalty: 1.0,
+  skiGroundAdherence: 0,
 };
 
 const STORAGE_KEY = "retribes_tuning";

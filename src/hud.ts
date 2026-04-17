@@ -67,6 +67,13 @@ const HUD_HTML = `
     position:absolute; inset:0; pointer-events:none; opacity:0;
     background: radial-gradient(ellipse at center, transparent 40%, rgba(180,30,20,0.6) 100%);
   "></div>
+
+  <!-- Speed lines overlay -->
+  <div id="hud-speed-lines" style="
+    position:absolute; inset:0; pointer-events:none; opacity:0;
+    background: radial-gradient(ellipse at center, transparent 30%, rgba(255,255,255,0.12) 70%, rgba(255,255,255,0.25) 100%);
+    mix-blend-mode: overlay;
+  "></div>
 </div>
 `;
 
@@ -78,6 +85,7 @@ let jetBadge: HTMLElement;
 let grappleBadge: HTMLElement;
 let playersEl: HTMLElement;
 let vignetteEl: HTMLElement;
+let speedLinesEl: HTMLElement;
 
 export function initHUD(initialPanelVisible: boolean): void {
   const badgeStyle = document.createElement("style");
@@ -112,6 +120,7 @@ export function initHUD(initialPanelVisible: boolean): void {
   grappleBadge = document.getElementById("hud-grapple-badge")!;
   playersEl = document.getElementById("hud-players")!;
   vignetteEl = document.getElementById("hud-vignette")!;
+  speedLinesEl = document.getElementById("hud-speed-lines")!;
 }
 
 export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash = 0): void {
@@ -139,4 +148,14 @@ export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash
 
   const vignetteOpacity = impactFlash * tuning.impactVignette;
   vignetteEl.style.opacity = vignetteOpacity > 0.01 ? String(vignetteOpacity) : "0";
+
+  if (tuning.enableSpeedLines) {
+    const speedThreshold = 20;
+    const speedMax = 80;
+    const t = Math.max(0, Math.min(1, (player.speed - speedThreshold) / (speedMax - speedThreshold)));
+    const lineOpacity = t * tuning.speedLineIntensity;
+    speedLinesEl.style.opacity = lineOpacity > 0.01 ? String(lineOpacity) : "0";
+  } else {
+    speedLinesEl.style.opacity = "0";
+  }
 }
