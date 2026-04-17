@@ -1,5 +1,6 @@
 import { PlayerController } from "./player";
 import { TUNE_PANEL_WIDTH, onTunePanelToggle } from "./tunePanel";
+import { tuning } from "./constants";
 
 const HUD_HTML = `
 <div id="hud" style="
@@ -60,6 +61,12 @@ const HUD_HTML = `
     font-size:12px; text-transform:uppercase; letter-spacing:1px;
     opacity:0.6; text-shadow:0 1px 4px rgba(0,0,0,0.5);
   ">1 player</div>
+
+  <!-- Impact vignette overlay -->
+  <div id="hud-vignette" style="
+    position:absolute; inset:0; pointer-events:none; opacity:0;
+    background: radial-gradient(ellipse at center, transparent 40%, rgba(180,30,20,0.6) 100%);
+  "></div>
 </div>
 `;
 
@@ -70,6 +77,7 @@ let skiBadge: HTMLElement;
 let jetBadge: HTMLElement;
 let grappleBadge: HTMLElement;
 let playersEl: HTMLElement;
+let vignetteEl: HTMLElement;
 
 export function initHUD(initialPanelVisible: boolean): void {
   const badgeStyle = document.createElement("style");
@@ -103,9 +111,10 @@ export function initHUD(initialPanelVisible: boolean): void {
   jetBadge = document.getElementById("hud-jet-badge")!;
   grappleBadge = document.getElementById("hud-grapple-badge")!;
   playersEl = document.getElementById("hud-players")!;
+  vignetteEl = document.getElementById("hud-vignette")!;
 }
 
-export function updateHUD(player: PlayerController, remoteCount = 0): void {
+export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash = 0): void {
   const speed = Math.round(player.speed * 3.6);
   speedEl.textContent = `${speed} km/h`;
 
@@ -127,4 +136,7 @@ export function updateHUD(player: PlayerController, remoteCount = 0): void {
 
   const total = 1 + remoteCount;
   playersEl.textContent = `${total} player${total !== 1 ? "s" : ""}`;
+
+  const vignetteOpacity = impactFlash * tuning.impactVignette;
+  vignetteEl.style.opacity = vignetteOpacity > 0.01 ? String(vignetteOpacity) : "0";
 }

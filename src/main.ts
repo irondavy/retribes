@@ -3,7 +3,7 @@ import { InputState } from "./input";
 import { PlayerController } from "./player";
 import { createTerrain, randomSpawn, type TerrainResult } from "./terrain";
 import { initHUD, updateHUD } from "./hud";
-import { initTunePanel, TUNE_PANEL_WIDTH, onTunePanelToggle, onMapChange } from "./tunePanel";
+import { initTunePanel, TUNE_PANEL_WIDTH, onTunePanelToggle, onMapChange, updateFPS } from "./tunePanel";
 import { tuning } from "./constants";
 import type { MapType } from "./constants";
 import { VisualSystem } from "./visuals";
@@ -24,7 +24,7 @@ const camera = new THREE.PerspectiveCamera(
   90,
   gameWidth() / window.innerHeight,
   0.1,
-  1000,
+  tuning.cameraFar,
 );
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -52,6 +52,8 @@ scene.add(ambient);
 // Terrain state
 let currentTerrain: TerrainResult = createTerrain(tuning.mapType);
 scene.add(currentTerrain.group);
+currentTerrain.markerGroup.visible = tuning.enableMarkers;
+currentTerrain.ceilingMeshes.visible = tuning.enableCeiling;
 
 const input = new InputState();
 const player = new PlayerController(camera);
@@ -60,6 +62,7 @@ function wirePlayerTerrain(t: TerrainResult): void {
   player.setTerrain(
     t.groundMeshes,
     t.ceilingMeshes,
+    t.structureMeshes,
     t.mirrorY,
     t.mapType,
     t.sphereCenter,
@@ -69,12 +72,17 @@ function wirePlayerTerrain(t: TerrainResult): void {
 
 wirePlayerTerrain(currentTerrain);
 
+let prevEnableMarkers = tuning.enableMarkers;
+let prevEnableCeiling = tuning.enableCeiling;
+
 const visuals = new VisualSystem(scene, renderer, camera, ambient);
 visuals.setTerrainMaterials(currentTerrain.groundMaterial, currentTerrain.ceilingMaterial);
 
 // Grapple rope visual
 const grappleRopeGeo = new THREE.CylinderGeometry(0.06, 0.06, 1, 5, 1);
-const grappleRopeMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, fog: false });
+const GRAPPLE_COLOR_TRAVELING = 0xcc6600;
+const GRAPPLE_COLOR_ATTACHED = 0xffcc00;
+const grappleRopeMat = new THREE.MeshBasicMaterial({ color: GRAPPLE_COLOR_TRAVELING, fog: false });
 const grappleRope = new THREE.Mesh(grappleRopeGeo, grappleRopeMat);
 grappleRope.frustumCulled = false;
 grappleRope.visible = false;
@@ -103,6 +111,8 @@ function switchMap(mapType: MapType): void {
   scene.add(currentTerrain.group);
   wirePlayerTerrain(currentTerrain);
   visuals.setTerrainMaterials(currentTerrain.groundMaterial, currentTerrain.ceilingMaterial);
+  currentTerrain.markerGroup.visible = tuning.enableMarkers;
+  currentTerrain.ceilingMeshes.visible = tuning.enableCeiling;
 
   if (mapType === "sphere") {
     scene.fog = new THREE.Fog(0x87ceeb, 200, 600);
@@ -163,6 +173,12 @@ document.addEventListener("pointerlockchange", () => {
 
 let lastTime = performance.now();
 
+const _ropeHand = new THREE.Vector3();
+const _ropeStart = new THREE.Vector3();
+const _ropeMid = new THREE.Vector3();
+const _ropeAxis = new THREE.Vector3();
+const _UP = new THREE.Vector3(0, 1, 0);
+
 function gameLoop(now: number): void {
   requestAnimationFrame(gameLoop);
 
@@ -173,36 +189,45 @@ function gameLoop(now: number): void {
 
   if (document.pointerLockElement) {
     player.update(dt, input);
-    updateHUD(player, remotePlayers.playerCount);
+    updateHUD(player, remotePlayers.playerCount, visuals.impactFlash);
   }
 
   network.sendSnapshot(player, dt);
   remotePlayers.update(dt);
 
   // Update grapple rope visual
-  if (player.grappleAttached) {
-    const handOffset = new THREE.Vector3(1.2, -1.0, -0.3);
-    handOffset.applyQuaternion(camera.quaternion);
-    const start = player.position.clone().add(handOffset);
-    const end = player.grappleAnchor;
-    const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-    const axis = new THREE.Vector3().subVectors(end, start);
-    const len = axis.length();
+  if (player.grappleAttached || player.grappleTraveling) {
+    _ropeHand.set(0.15, -1.3, -0.6).applyQuaternion(camera.quaternion);
+    _ropeStart.copy(player.position).add(_ropeHand);
+    const ropeEnd = player.grappleTraveling ? player.grappleHookPos : player.grappleAnchor;
+    _ropeMid.addVectors(_ropeStart, ropeEnd).multiplyScalar(0.5);
+    _ropeAxis.subVectors(ropeEnd, _ropeStart);
+    const len = _ropeAxis.length();
 
-    grappleRope.position.copy(mid);
+    grappleRope.position.copy(_ropeMid);
     grappleRope.scale.set(1, len, 1);
     if (len > 0.01) {
-      grappleRope.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        axis.normalize(),
-      );
+      grappleRope.quaternion.setFromUnitVectors(_UP, _ropeAxis.normalize());
     }
+    grappleRopeMat.color.setHex(player.grappleAttached ? GRAPPLE_COLOR_ATTACHED : GRAPPLE_COLOR_TRAVELING);
     grappleRope.visible = true;
   } else {
     grappleRope.visible = false;
   }
 
+  // Toggle markers / ceiling visibility
+  if (tuning.enableMarkers !== prevEnableMarkers) {
+    currentTerrain.markerGroup.visible = tuning.enableMarkers;
+    prevEnableMarkers = tuning.enableMarkers;
+  }
+  if (tuning.enableCeiling !== prevEnableCeiling) {
+    currentTerrain.ceilingMeshes.visible = tuning.enableCeiling;
+    ceilLight.visible = tuning.enableCeiling;
+    prevEnableCeiling = tuning.enableCeiling;
+  }
+
   renderer.render(scene, camera);
+  updateFPS();
 }
 
 requestAnimationFrame(gameLoop);

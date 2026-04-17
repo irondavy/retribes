@@ -88,11 +88,14 @@ class ParticlePool {
   }
 
   update(dt: number): void {
-    for (let i = this.particles.length - 1; i >= 0; i--) {
-      const p = this.particles[i];
+    const arr = this.particles;
+    let i = 0;
+    while (i < arr.length) {
+      const p = arr[i];
       p.life -= dt;
       if (p.life <= 0) {
-        this.particles.splice(i, 1);
+        arr[i] = arr[arr.length - 1];
+        arr.pop();
         continue;
       }
       p.x += p.vx * dt;
@@ -101,15 +104,17 @@ class ParticlePool {
       p.vx *= 0.97;
       p.vy *= 0.97;
       p.vz *= 0.97;
+      i++;
     }
 
     let idx = 0;
-    for (const p of this.particles) {
+    for (let j = 0; j < arr.length; j++) {
+      const p = arr[j];
       this.positions[idx++] = p.x;
       this.positions[idx++] = p.y;
       this.positions[idx++] = p.z;
     }
-    this.geometry.setDrawRange(0, this.particles.length);
+    this.geometry.setDrawRange(0, arr.length);
     (this.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
   }
 }
@@ -136,6 +141,16 @@ export class VisualSystem {
   private currentFov = 90;
   private jetTimer = 0;
   private skiTimer = 0;
+
+  private _impactIntensity = 0;
+  private impactTimer = 0;
+  private readonly impactOffset = new THREE.Vector3();
+  private impactFovKick = 0;
+
+  /** Current impact flash strength (0–1), decaying. Used by HUD vignette. */
+  get impactFlash(): number {
+    return this.impactTimer > 0 ? this._impactIntensity * (this.impactTimer / 0.35) : 0;
+  }
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -247,11 +262,15 @@ export class VisualSystem {
       this.hemiLight.intensity = tuning.hemisphereLightIntensity;
     }
 
-    // Fog
+    // Fog + camera clip
     const fog = this.scene.fog as THREE.Fog | null;
     if (fog) {
       fog.near = tuning.fogNear;
       fog.far = tuning.fogFar;
+    }
+    if (this.camera.far !== tuning.cameraFar) {
+      this.camera.far = tuning.cameraFar;
+      this.camera.updateProjectionMatrix();
     }
 
     // FOV scaling
@@ -261,8 +280,36 @@ export class VisualSystem {
     } else {
       this.currentFov += (90 - this.currentFov) * Math.min(1, 5 * dt);
     }
-    this.camera.fov = this.currentFov;
-    this.camera.updateProjectionMatrix();
+    if (Math.abs(this.camera.fov - this.currentFov) > 0.01) {
+      this.camera.fov = this.currentFov;
+      this.camera.updateProjectionMatrix();
+    }
+
+    // Impact feedback — screen shake + FOV punch
+    const impactForce = player.lastImpact;
+    if (impactForce > tuning.impactThreshold) {
+      const normalized = Math.min(1, (impactForce - tuning.impactThreshold) / 30);
+      this._impactIntensity = normalized;
+      this.impactTimer = 0.35;
+      this.impactFovKick = normalized * 8 * tuning.impactFovPunch;
+    }
+    if (this.impactTimer > 0) {
+      this.impactTimer -= dt;
+      const t = Math.max(0, this.impactTimer / 0.35);
+      const shakeAmp = this._impactIntensity * t * 0.4 * tuning.impactShakeIntensity;
+      this.impactOffset.set(
+        (Math.random() - 0.5) * 2 * shakeAmp,
+        (Math.random() - 0.5) * 2 * shakeAmp,
+        (Math.random() - 0.5) * 1 * shakeAmp,
+      );
+      this.camera.position.add(this.impactOffset);
+
+      const fovKick = this.impactFovKick * t;
+      this.camera.fov = this.currentFov - fovKick;
+      this.camera.updateProjectionMatrix();
+    } else {
+      this._impactIntensity = 0;
+    }
 
     // Sky dome follows camera
     if (this.skyDome.visible) {

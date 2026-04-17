@@ -15,6 +15,9 @@ export interface TerrainResult {
   group: THREE.Group;
   groundMeshes: THREE.Group;
   ceilingMeshes: THREE.Group;
+  /** Floating obstacles — used for grapple and body collision, but NOT ground-sampling raycasts. */
+  structureMeshes: THREE.Group;
+  markerGroup: THREE.Group;
   mirrorY: number;
   mapType: MapType;
   sphereCenter?: THREE.Vector3;
@@ -75,13 +78,15 @@ function applyVertexColors(
       const steepness = 1 - Math.abs(norm.getY(i));
 
       if (mode === "ceiling") {
-        if (t < 0.5) {
-          c.lerpColors(new THREE.Color(0x2a3a4b), new THREE.Color(0x3a6a7b), t / 0.5);
+        if (t < 0.35) {
+          c.lerpColors(new THREE.Color(0x1a2038), new THREE.Color(0x2a3a5b), t / 0.35);
+        } else if (t < 0.7) {
+          c.lerpColors(new THREE.Color(0x2a3a5b), new THREE.Color(0x4a6080), (t - 0.35) / 0.35);
         } else {
-          c.lerpColors(new THREE.Color(0x3a6a7b), new THREE.Color(0x6a9aab), (t - 0.5) / 0.5);
+          c.lerpColors(new THREE.Color(0x4a6080), new THREE.Color(0x7090a8), (t - 0.7) / 0.3);
         }
-        if (steepness > 0.3) {
-          c.lerp(new THREE.Color(0x3a4a4a), Math.min(1, (steepness - 0.3) / 0.4) * 0.5);
+        if (steepness > 0.25) {
+          c.lerp(new THREE.Color(0x1a2530), Math.min(1, (steepness - 0.25) / 0.35) * 0.6);
         }
       } else {
         if (t < 0.3) {
@@ -212,44 +217,239 @@ varying vec3 vWorldPositionGrid;`
 // FLAT MAP
 // ═══════════════════════════════════════════════════════════════════
 
-const FLAT_TERRAIN_SIZE = 600;
-const FLAT_SEGMENTS = 250;
+const FLAT_TERRAIN_SIZE = 2000;
+const FLAT_SEGMENTS = 500;
+const FLAT_HALF = FLAT_TERRAIN_SIZE / 2;
 
-export function getTerrainHeight(x: number, z: number): number {
+/** Multi-octave procedural noise for natural-feeling terrain across the full map. */
+function proceduralBase(x: number, z: number): number {
   let h = 0;
 
+  // Large-scale sweeping hills (wavelength ~300-400m, amplitude ~55-70m)
+  h += 70 * (noise2D(x * 0.003 + 0.5, z * 0.003 + 0.5) - 0.5);
+  h += 55 * (noise2D(x * 0.004 + 3.7, z * 0.0035 + 1.2) - 0.5);
+  h += 40 * (noise2D(x * 0.0025 + 7.1, z * 0.005 + 4.3) - 0.5);
+
+  // Medium-scale rolling terrain (wavelength ~80-120m, amplitude ~12-20m)
+  h += 18 * (noise2D(x * 0.012 + 2.3, z * 0.011 + 5.1) - 0.5);
+  h += 15 * (noise2D(x * 0.015 + 8.7, z * 0.013 + 3.9) - 0.5);
+  h += 12 * (noise2D(x * 0.009 + 1.1, z * 0.014 + 9.2) - 0.5);
+
+  // Small-scale bumps for texture (wavelength ~15-25m, amplitude ~3-5m)
+  h += 5 * (noise2D(x * 0.04 + 4.4, z * 0.045 + 6.6) - 0.5);
+  h += 3 * (noise2D(x * 0.06 + 0.3, z * 0.055 + 2.8) - 0.5);
+
+  return h;
+}
+
+/** Smooth falloff to zero near terrain edges. */
+function edgeFalloff(x: number, z: number): number {
+  const dx = Math.abs(x) / FLAT_HALF;
+  const dz = Math.abs(z) / FLAT_HALF;
+  const d = Math.max(dx, dz);
+  // Start fading at 80% of the way to the edge, fully zero at 95%
+  if (d < 0.8) return 1;
+  if (d > 0.95) return 0;
+  const t = (d - 0.8) / 0.15;
+  return 1 - t * t * (3 - 2 * t); // smoothstep
+}
+
+/** Hand-placed landmarks — center cluster (original features). */
+function centerLandmarks(x: number, z: number): number {
+  let h = 0;
+
+  // Major peaks
   h += 45 * gaussian(x, z, 0, -100, 55);
   h += 38 * gaussian(x, z, 90, 80, 50);
   h += 30 * gaussian(x, z, -120, -40, 45);
   h += 35 * gaussian(x, z, -60, 110, 50);
 
+  // Ridgelines
   h += 28 * ridge(x, z, -40, -30, 120, 20, Math.PI * 0.15);
   h += 22 * ridge(x, z, 60, 20, 100, 18, Math.PI * -0.25);
   h += 18 * ridge(x, z, -100, 60, 80, 15, Math.PI * 0.4);
 
+  // Halfpipe
   h += 20 * ridge(x, z, 130, -60, 90, 14, Math.PI * 0.1);
   h += 20 * ridge(x, z, 155, -55, 90, 14, Math.PI * 0.1);
   h -= 10 * ridge(x, z, 142, -57, 95, 10, Math.PI * 0.1);
 
+  // Bowls
   h -= 18 * gaussian(x, z, 50, -40, 40);
   h -= 14 * gaussian(x, z, -30, 50, 35);
 
+  // Launch ramps
   h += 25 * gaussian(x, z, -30, -70, 18);
   h += 20 * gaussian(x, z, 100, -20, 15);
   h += 15 * gaussian(x, z, 40, 130, 12);
   h += 18 * gaussian(x, z, -80, -120, 14);
 
+  // Small bumps
   h += 6 * gaussian(x, z, 20, -15, 12);
   h += 5 * gaussian(x, z, -50, -10, 10);
   h += 7 * gaussian(x, z, 70, -80, 14);
   h += 4 * gaussian(x, z, -20, 80, 11);
   h += 5 * gaussian(x, z, 110, 40, 13);
 
-  h += 3.0 * Math.sin(x * 0.018) * Math.cos(z * 0.022);
-  h += 2.0 * Math.sin(x * 0.035 + 1.0) * Math.sin(z * 0.03 + 0.5);
-  h += 1.5 * Math.cos(x * 0.05 + 2.0) * Math.sin(z * 0.045 + 1.0);
+  return h;
+}
+
+/** Outer landmark clusters spread across the larger map. */
+function outerLandmarks(x: number, z: number): number {
+  let h = 0;
+
+  // NE mountain range (~500, -500)
+  h += 55 * gaussian(x, z, 500, -500, 70);
+  h += 40 * gaussian(x, z, 450, -550, 55);
+  h += 30 * ridge(x, z, 480, -520, 150, 22, Math.PI * 0.3);
+
+  // SW canyon system (~-500, 400)
+  h -= 25 * ridge(x, z, -500, 400, 180, 18, Math.PI * -0.2);
+  h += 20 * ridge(x, z, -520, 380, 160, 12, Math.PI * -0.2);
+  h += 20 * ridge(x, z, -480, 420, 160, 12, Math.PI * -0.2);
+  h += 35 * gaussian(x, z, -550, 350, 45);
+
+  // North ski run — long gentle slope with launch at the end (~0, -600)
+  h += 50 * ridge(x, z, 0, -600, 250, 60, Math.PI * 0.0);
+  h += 30 * gaussian(x, z, 0, -730, 20);
+
+  // SE plateau (~600, 500)
+  h += 40 * gaussian(x, z, 600, 500, 100);
+  h += 15 * gaussian(x, z, 650, 520, 30);
+  h -= 12 * gaussian(x, z, 580, 480, 25);
+
+  // West twin peaks (~-700, -100)
+  h += 48 * gaussian(x, z, -700, -100, 50);
+  h += 42 * gaussian(x, z, -650, -50, 45);
+  h += 25 * ridge(x, z, -675, -75, 100, 20, Math.PI * 0.6);
+
+  // Far south bowl and ramp (~200, 700)
+  h -= 20 * gaussian(x, z, 200, 700, 50);
+  h += 35 * gaussian(x, z, 250, 750, 18);
+  h += 28 * gaussian(x, z, 150, 680, 22);
+
+  // NW ridge system (~-400, -600)
+  h += 35 * ridge(x, z, -400, -600, 200, 25, Math.PI * 0.45);
+  h += 25 * ridge(x, z, -350, -550, 120, 18, Math.PI * 0.7);
+  h += 20 * gaussian(x, z, -450, -650, 30);
+
+  // East halfpipe (~750, 0)
+  h += 22 * ridge(x, z, 750, 20, 120, 16, Math.PI * 0.5);
+  h += 22 * ridge(x, z, 770, -10, 120, 16, Math.PI * 0.5);
+  h -= 12 * ridge(x, z, 760, 5, 130, 10, Math.PI * 0.5);
+
+  // Deep valleys — Tribes-scale depressions
+  h -= 60 * gaussian(x, z, 300, -300, 80);
+  h -= 50 * gaussian(x, z, -250, -400, 70);
+  h -= 45 * gaussian(x, z, -600, 200, 65);
+  h -= 55 * ridge(x, z, 400, 300, 200, 30, Math.PI * 0.35);
+  h -= 40 * gaussian(x, z, 100, -500, 55);
+  h -= 35 * gaussian(x, z, -350, 600, 60);
 
   return h;
+}
+
+export function getTerrainHeight(x: number, z: number): number {
+  const fade = edgeFalloff(x, z);
+  const base = proceduralBase(x, z);
+  const center = centerLandmarks(x, z);
+  const outer = outerLandmarks(x, z);
+  return (base + center + outer) * fade;
+}
+
+// ─── Ceiling heightmap (distinct from floor) ─────────────────────
+
+/** Different noise seeds for an independent ceiling topology. */
+function ceilingProceduralBase(x: number, z: number): number {
+  let h = 0;
+
+  // Broad, smooth domes (longer wavelengths than the floor)
+  h += 50 * (noise2D(x * 0.002 + 10.3, z * 0.0025 + 8.7) - 0.5);
+  h += 40 * (noise2D(x * 0.003 + 15.1, z * 0.002 + 12.4) - 0.5);
+  h += 30 * (noise2D(x * 0.0015 + 22.9, z * 0.003 + 19.6) - 0.5);
+
+  // Medium formations — flatter ridges, wider spacing
+  h += 14 * (noise2D(x * 0.008 + 30.2, z * 0.009 + 25.8) - 0.5);
+  h += 10 * (noise2D(x * 0.011 + 35.4, z * 0.01 + 28.1) - 0.5);
+
+  // Fine stalactite-like detail: sharper, more vertical features
+  const detail = noise2D(x * 0.05 + 40.6, z * 0.055 + 38.3);
+  h += 8 * Math.pow(Math.max(0, detail - 0.4) / 0.6, 2.0);
+  h += 4 * (noise2D(x * 0.07 + 44.1, z * 0.065 + 42.9) - 0.5);
+
+  return h;
+}
+
+/** Ceiling-specific landmarks — stalactite clusters, hanging arches, vaults. */
+function ceilingLandmarks(x: number, z: number): number {
+  let h = 0;
+
+  // Large stalactite clusters (protrude downward = positive height on ceiling)
+  h += 50 * gaussian(x, z, -80, 150, 40);
+  h += 40 * gaussian(x, z, 200, -100, 50);
+  h += 35 * gaussian(x, z, -150, -180, 45);
+  h += 30 * gaussian(x, z, 100, 200, 35);
+
+  // Hanging arches
+  h += 25 * ridge(x, z, 0, 0, 200, 25, Math.PI * 0.6);
+  h += 20 * ridge(x, z, -200, 100, 150, 20, Math.PI * -0.3);
+
+  // Deep vaults (recessed areas = negative = ceiling pulls away)
+  h -= 30 * gaussian(x, z, 50, -50, 60);
+  h -= 25 * gaussian(x, z, -100, 80, 55);
+  h -= 20 * gaussian(x, z, 180, 120, 50);
+
+  return h;
+}
+
+function ceilingOuterLandmarks(x: number, z: number): number {
+  let h = 0;
+
+  // NW massive stalactite column (~-500, -400)
+  h += 60 * gaussian(x, z, -500, -400, 60);
+  h += 35 * gaussian(x, z, -450, -450, 40);
+  h += 25 * ridge(x, z, -475, -425, 180, 20, Math.PI * 0.7);
+
+  // SE cathedral vault (~400, 500)
+  h -= 40 * gaussian(x, z, 400, 500, 90);
+  h += 30 * ridge(x, z, 350, 520, 200, 15, Math.PI * 0.2);
+  h += 30 * ridge(x, z, 450, 480, 200, 15, Math.PI * -0.15);
+
+  // East hanging formation (~700, -50)
+  h += 45 * gaussian(x, z, 700, -50, 55);
+  h += 28 * gaussian(x, z, 730, 20, 35);
+  h += 20 * ridge(x, z, 715, -15, 120, 18, Math.PI * 0.45);
+
+  // South stalactite forest (~100, 650)
+  h += 35 * gaussian(x, z, 100, 650, 25);
+  h += 30 * gaussian(x, z, 150, 680, 22);
+  h += 28 * gaussian(x, z, 60, 620, 20);
+  h += 25 * gaussian(x, z, 130, 710, 18);
+  h += 22 * gaussian(x, z, 180, 640, 20);
+
+  // West deep vault (~-650, 100)
+  h -= 45 * gaussian(x, z, -650, 100, 80);
+  h -= 30 * gaussian(x, z, -600, 50, 60);
+
+  // North bridge formation (~0, -650)
+  h += 35 * ridge(x, z, 0, -650, 200, 22, Math.PI * 0.0);
+  h -= 20 * gaussian(x, z, 0, -650, 40);
+
+  // Scattered hanging protrusions
+  h += 25 * gaussian(x, z, -300, 300, 30);
+  h += 22 * gaussian(x, z, 350, -350, 28);
+  h += 20 * gaussian(x, z, -200, -600, 25);
+  h += 18 * gaussian(x, z, 500, 200, 22);
+
+  return h;
+}
+
+export function getCeilingHeight(x: number, z: number): number {
+  const fade = edgeFalloff(x, z);
+  const base = ceilingProceduralBase(x, z);
+  const center = ceilingLandmarks(x, z);
+  const outer = ceilingOuterLandmarks(x, z);
+  return (base + center + outer) * fade;
 }
 
 function gaussian(x: number, z: number, cx: number, cz: number, radius: number): number {
@@ -275,35 +475,44 @@ function ridge(
 }
 
 const FLAT_SPAWN_POINTS: SpawnPoint[] = [
-  { x: 0, z: -80, facingAngle: Math.PI },
-  { x: 90, z: 60, facingAngle: -Math.PI * 0.7 },
+  // Center cluster (original)
+  { x: 0, z: -100, facingAngle: Math.PI },
+  { x: 90, z: 80, facingAngle: -Math.PI * 0.7 },
   { x: -120, z: -40, facingAngle: Math.PI * 0.3 },
-  { x: -40, z: -30, facingAngle: Math.PI * 0.15 },
   { x: 130, z: -60, facingAngle: Math.PI * 0.1 },
-  { x: -30, z: -70, facingAngle: Math.PI * 0.5 },
-  { x: -60, z: 110, facingAngle: -Math.PI * 0.3 },
-  { x: 60, z: 20, facingAngle: -Math.PI * 0.25 },
+  // NE mountain range
+  { x: 500, z: -500, facingAngle: Math.PI * 0.8 },
+  { x: 450, z: -550, facingAngle: Math.PI * -0.3 },
+  // SW canyon
+  { x: -500, z: 400, facingAngle: Math.PI * 0.2 },
+  { x: -550, z: 350, facingAngle: Math.PI * -0.5 },
+  // North ski run
+  { x: 0, z: -600, facingAngle: Math.PI },
+  { x: 0, z: -730, facingAngle: 0 },
+  // SE plateau
+  { x: 600, z: 500, facingAngle: -Math.PI * 0.6 },
+  { x: 650, z: 520, facingAngle: Math.PI * 0.4 },
+  // West twin peaks
+  { x: -700, z: -100, facingAngle: Math.PI * 0.3 },
+  { x: -650, z: -50, facingAngle: -Math.PI * 0.4 },
+  // Far south
+  { x: 200, z: 700, facingAngle: -Math.PI * 0.5 },
+  { x: 250, z: 750, facingAngle: Math.PI },
+  // NW ridges
+  { x: -400, z: -600, facingAngle: Math.PI * 0.45 },
+  { x: -350, z: -550, facingAngle: -Math.PI * 0.2 },
+  // East halfpipe
+  { x: 750, z: 0, facingAngle: Math.PI * 0.5 },
 ];
 
-function scatterFlatMarkers(group: THREE.Group): void {
-  const orbGeo = new THREE.SphereGeometry(0.6, 10, 8);
-  const orbMat = new THREE.MeshStandardMaterial({
-    color: 0xddeeff, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.7,
-  });
+function scatterFlatMarkers(markerGroup: THREE.Group): void {
+  const spacing = 20;
+  const half = FLAT_TERRAIN_SIZE / 2 - 40;
 
-  const petalGeo = new THREE.CircleGeometry(0.25, 5);
-  const flowerColors = [0xe84393, 0xfd79a8, 0xffeaa7, 0xdfe6e9, 0xa29bfe, 0xff7675];
-  const flowerMats = flowerColors.map(
-    (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.6, side: THREE.DoubleSide }),
-  );
-
-  const grassGeo = new THREE.PlaneGeometry(0.12, 0.8);
-  const grassMat = new THREE.MeshStandardMaterial({
-    color: 0x2d8a4e, roughness: 0.8, side: THREE.DoubleSide,
-  });
-
-  const spacing = 12;
-  const half = FLAT_TERRAIN_SIZE / 2 - 20;
+  // First pass: count instances
+  const orbTransforms: { x: number; y: number; z: number; s: number }[] = [];
+  const grassTransforms: { x: number; y: number; z: number; ry: number; rz: number }[] = [];
+  const flowerTransforms: { x: number; y: number; z: number; colorIdx: number }[] = [];
 
   for (let gx = -half; gx <= half; gx += spacing) {
     for (let gz = -half; gz <= half; gz += spacing) {
@@ -315,47 +524,20 @@ function scatterFlatMarkers(group: THREE.Group): void {
       const h = getTerrainHeight(jx, jz);
 
       if (density > 0.72) {
-        const orb = new THREE.Mesh(orbGeo, orbMat);
-        const orbScale = 0.6 + hash2(gx * 3, gz * 5) * 0.8;
-        orb.scale.setScalar(orbScale);
-        orb.position.set(jx, h + 0.8 * orbScale, jz);
-        group.add(orb);
+        const s = 0.6 + hash2(gx * 3, gz * 5) * 0.8;
+        orbTransforms.push({ x: jx, y: h + 0.8 * s, z: jz, s });
       }
 
       const patchSeed = hash2(gx * 11, gz * 17);
-      const flowerCount = Math.floor(2 + patchSeed * 6);
+      const flowerCount = Math.floor(2 + patchSeed * 4);
       for (let f = 0; f < flowerCount; f++) {
         const fa = (f / flowerCount) * Math.PI * 2 + patchSeed * 5;
         const fr = 0.5 + hash2(gx + f * 37, gz + f * 53) * 1.5;
         const fx = jx + Math.cos(fa) * fr;
         const fz = jz + Math.sin(fa) * fr;
         const fh = getTerrainHeight(fx, fz);
-
-        const mat = flowerMats[Math.floor(hash2(gx + f, gz - f) * flowerMats.length)];
-        const petalCount = 4 + Math.floor(hash2(f * 3, gx + gz) * 3);
-        const stem = new THREE.Group();
-        stem.position.set(fx, fh, fz);
-
-        for (let p = 0; p < petalCount; p++) {
-          const petal = new THREE.Mesh(petalGeo, mat);
-          const angle = (p / petalCount) * Math.PI * 2;
-          const tilt = 0.3 + hash2(p + gx, f + gz) * 0.4;
-          petal.position.set(
-            Math.cos(angle) * 0.15,
-            0.5 + hash2(gx * f, gz * p) * 0.3,
-            Math.sin(angle) * 0.15,
-          );
-          petal.rotation.set(tilt, angle, 0);
-          stem.add(petal);
-        }
-
-        const center = new THREE.Mesh(
-          new THREE.SphereGeometry(0.08, 6, 4),
-          new THREE.MeshStandardMaterial({ color: 0xfdcb6e, roughness: 0.5 }),
-        );
-        center.position.y = 0.55 + hash2(gx * f, gz * f) * 0.2;
-        stem.add(center);
-        group.add(stem);
+        const colorIdx = Math.floor(hash2(gx + f, gz - f) * 6);
+        flowerTransforms.push({ x: fx, y: fh + 0.4, z: fz, colorIdx });
       }
 
       const grassCount = Math.floor(3 + hash2(gx * 19, gz * 23) * 8);
@@ -365,14 +547,313 @@ function scatterFlatMarkers(group: THREE.Group): void {
         const bx = jx + Math.cos(ga) * gr;
         const bz = jz + Math.sin(ga) * gr;
         const bh = getTerrainHeight(bx, bz);
-
-        const blade = new THREE.Mesh(grassGeo, grassMat);
-        blade.position.set(bx, bh + 0.4, bz);
-        blade.rotation.set(0, hash2(g + gx, g + gz) * Math.PI, 0.15 - hash2(gx * g, gz) * 0.3);
-        group.add(blade);
+        grassTransforms.push({
+          x: bx, y: bh + 0.4, z: bz,
+          ry: hash2(g + gx, g + gz) * Math.PI,
+          rz: 0.15 - hash2(gx * g, gz) * 0.3,
+        });
       }
     }
   }
+
+  const _m = new THREE.Matrix4();
+  const _q = new THREE.Quaternion();
+  const _s = new THREE.Vector3();
+  const _e = new THREE.Euler();
+
+  // Orbs — single InstancedMesh
+  if (orbTransforms.length > 0) {
+    const orbGeo = new THREE.SphereGeometry(0.6, 8, 6);
+    const orbMat = new THREE.MeshStandardMaterial({
+      color: 0xddeeff, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.7,
+    });
+    const orbIM = new THREE.InstancedMesh(orbGeo, orbMat, orbTransforms.length);
+    for (let i = 0; i < orbTransforms.length; i++) {
+      const t = orbTransforms[i];
+      _s.setScalar(t.s);
+      _m.compose(new THREE.Vector3(t.x, t.y, t.z), _q.identity(), _s);
+      orbIM.setMatrixAt(i, _m);
+    }
+    orbIM.instanceMatrix.needsUpdate = true;
+    markerGroup.add(orbIM);
+  }
+
+  // Grass blades — single InstancedMesh
+  if (grassTransforms.length > 0) {
+    const grassGeo = new THREE.PlaneGeometry(0.12, 0.8);
+    const grassMat = new THREE.MeshStandardMaterial({
+      color: 0x2d8a4e, roughness: 0.8, side: THREE.DoubleSide,
+    });
+    const grassIM = new THREE.InstancedMesh(grassGeo, grassMat, grassTransforms.length);
+    const _pos = new THREE.Vector3();
+    for (let i = 0; i < grassTransforms.length; i++) {
+      const t = grassTransforms[i];
+      _pos.set(t.x, t.y, t.z);
+      _e.set(0, t.ry, t.rz);
+      _q.setFromEuler(_e);
+      _s.set(1, 1, 1);
+      _m.compose(_pos, _q, _s);
+      grassIM.setMatrixAt(i, _m);
+    }
+    grassIM.instanceMatrix.needsUpdate = true;
+    markerGroup.add(grassIM);
+  }
+
+  // Flowers — one InstancedMesh per color
+  const flowerColors = [0xe84393, 0xfd79a8, 0xffeaa7, 0xdfe6e9, 0xa29bfe, 0xff7675];
+  const buckets: typeof flowerTransforms[] = flowerColors.map(() => []);
+  for (const f of flowerTransforms) {
+    buckets[f.colorIdx].push(f);
+  }
+  const petalGeo = new THREE.CircleGeometry(0.3, 5);
+  const _pos = new THREE.Vector3();
+  for (let ci = 0; ci < flowerColors.length; ci++) {
+    const bucket = buckets[ci];
+    if (bucket.length === 0) continue;
+    const mat = new THREE.MeshStandardMaterial({
+      color: flowerColors[ci], roughness: 0.6, side: THREE.DoubleSide,
+    });
+    const im = new THREE.InstancedMesh(petalGeo, mat, bucket.length);
+    for (let i = 0; i < bucket.length; i++) {
+      const f = bucket[i];
+      _pos.set(f.x, f.y, f.z);
+      _e.set(0.4, hash2(f.x * 3.7, f.z * 5.3) * Math.PI * 2, 0);
+      _q.setFromEuler(_e);
+      _s.set(1, 1, 1);
+      _m.compose(_pos, _q, _s);
+      im.setMatrixAt(i, _m);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    markerGroup.add(im);
+  }
+}
+
+function scatterCeilingMarkers(markerGroup: THREE.Group, mirrorY: number): void {
+  const spacing = 25;
+  const half = FLAT_TERRAIN_SIZE / 2 - 40;
+
+  const stalactiteTransforms: { x: number; y: number; z: number; h: number; r: number }[] = [];
+  const crystalTransforms: { x: number; y: number; z: number; s: number; colorIdx: number }[] = [];
+
+  for (let gx = -half; gx <= half; gx += spacing) {
+    for (let gz = -half; gz <= half; gz += spacing) {
+      const density = noise2D(gx * 0.01 + 50.0, gz * 0.01 + 50.0);
+      if (density < 0.4) continue;
+
+      const jx = gx + (hash2(gx * 11 + 100, gz * 17 + 100) - 0.5) * spacing * 0.6;
+      const jz = gz + (hash2(gx * 17 + 100, gz * 11 + 100) - 0.5) * spacing * 0.6;
+      const ceilH = getCeilingHeight(jx, jz);
+      const surfaceY = mirrorY - ceilH;
+
+      if (density > 0.65) {
+        const h = 1.5 + hash2(gx * 5 + 200, gz * 7 + 200) * 4.0;
+        const r = 0.15 + hash2(gx * 7 + 200, gz * 5 + 200) * 0.35;
+        stalactiteTransforms.push({ x: jx, y: surfaceY - h * 0.5, z: jz, h, r });
+      }
+
+      if (density > 0.5) {
+        const count = Math.floor(1 + hash2(gx * 23 + 300, gz * 29 + 300) * 3);
+        for (let c = 0; c < count; c++) {
+          const ca = (c / count) * Math.PI * 2 + hash2(gx + c, gz - c) * 2;
+          const cr = 0.3 + hash2(gx + c * 41, gz + c * 53) * 1.2;
+          const cx = jx + Math.cos(ca) * cr;
+          const cz = jz + Math.sin(ca) * cr;
+          const cCeilH = getCeilingHeight(cx, cz);
+          const cSurfY = mirrorY - cCeilH;
+          const s = 0.3 + hash2(gx + c * 67, gz + c * 71) * 0.6;
+          const colorIdx = Math.floor(hash2(gx + c * 83, gz + c * 97) * 4);
+          crystalTransforms.push({ x: cx, y: cSurfY - 0.3, z: cz, s, colorIdx });
+        }
+      }
+    }
+  }
+
+  const _m = new THREE.Matrix4();
+  const _q = new THREE.Quaternion();
+  const _s = new THREE.Vector3();
+  const _p = new THREE.Vector3();
+
+  // Stalactites — inverted cones hanging from ceiling
+  if (stalactiteTransforms.length > 0) {
+    const stalGeo = new THREE.ConeGeometry(1, 1, 5);
+    // Rotate so the point faces down
+    stalGeo.rotateX(Math.PI);
+    const stalMat = new THREE.MeshStandardMaterial({
+      color: 0x5a6a7a, roughness: 0.7, metalness: 0.2,
+    });
+    const stalIM = new THREE.InstancedMesh(stalGeo, stalMat, stalactiteTransforms.length);
+    for (let i = 0; i < stalactiteTransforms.length; i++) {
+      const t = stalactiteTransforms[i];
+      _p.set(t.x, t.y, t.z);
+      _q.identity();
+      _s.set(t.r, t.h, t.r);
+      _m.compose(_p, _q, _s);
+      stalIM.setMatrixAt(i, _m);
+    }
+    stalIM.instanceMatrix.needsUpdate = true;
+    markerGroup.add(stalIM);
+  }
+
+  // Ceiling crystals — glowing octahedrons
+  const crystalColors = [0x66bbff, 0x88ddff, 0xaaeeff, 0x44aadd];
+  const crystalBuckets: typeof crystalTransforms[] = crystalColors.map(() => []);
+  for (const c of crystalTransforms) {
+    crystalBuckets[c.colorIdx].push(c);
+  }
+  const crystalGeo = new THREE.OctahedronGeometry(1, 0);
+  for (let ci = 0; ci < crystalColors.length; ci++) {
+    const bucket = crystalBuckets[ci];
+    if (bucket.length === 0) continue;
+    const mat = new THREE.MeshStandardMaterial({
+      color: crystalColors[ci], roughness: 0.15, metalness: 0.5,
+      emissive: crystalColors[ci], emissiveIntensity: 0.15,
+    });
+    const im = new THREE.InstancedMesh(crystalGeo, mat, bucket.length);
+    for (let i = 0; i < bucket.length; i++) {
+      const c = bucket[i];
+      _p.set(c.x, c.y, c.z);
+      _q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), hash2(c.x * 3.7, c.z * 5.3) * Math.PI * 2);
+      _s.setScalar(c.s);
+      _m.compose(_p, _q, _s);
+      im.setMatrixAt(i, _m);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    markerGroup.add(im);
+  }
+}
+
+function createFloatingStructures(mirrorY: number): THREE.Group {
+  const structGroup = new THREE.Group();
+  const midY = mirrorY / 2;
+  const floorClearance = 140; // stay above tallest terrain peaks
+  const ceilClearance = 140;  // stay below ceiling terrain
+  const yMin = floorClearance;
+  const yMax = mirrorY - ceilClearance;
+  const mapHalf = FLAT_TERRAIN_SIZE / 2 * 0.8;
+  const minRadius = 60;
+
+  const structMat = new THREE.MeshStandardMaterial({
+    color: 0x7799bb, roughness: 0.4, metalness: 0.6,
+  });
+  const darkMat = new THREE.MeshStandardMaterial({
+    color: 0x556677, roughness: 0.5, metalness: 0.5,
+  });
+
+  interface StructDef {
+    x: number; y: number; z: number;
+    type: "platform" | "ring" | "column";
+    seed: number; seed2: number;
+  }
+  const structs: StructDef[] = [];
+
+  const count = 40;
+  for (let i = 0; i < count; i++) {
+    const angle = i * 2.399963 + 0.7; // golden angle for even angular spread
+    const rRaw = hash2(i * 31, i * 47);
+    // sqrt distribution so density is uniform by area
+    const radius = minRadius + Math.sqrt(rRaw) * (mapHalf - minRadius);
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    // full vertical range between clearances
+    const y = yMin + hash2(i * 17, i * 29) * (yMax - yMin);
+    const seed = hash2(i * 53, i * 67);
+    const seed2 = hash2(i * 83, i * 97);
+
+    let type: "platform" | "ring" | "column";
+    if (seed < 0.4) type = "platform";
+    else if (seed < 0.7) type = "ring";
+    else type = "column";
+
+    structs.push({ x, y, z, type, seed, seed2 });
+  }
+
+  // Platforms — landing surfaces, seed² curve so most are medium but a few are huge
+  const platformGeo = new THREE.BoxGeometry(1, 1, 1);
+  const platforms = structs.filter(s => s.type === "platform");
+  if (platforms.length > 0) {
+    const im = new THREE.InstancedMesh(platformGeo, structMat, platforms.length);
+    const _m = new THREE.Matrix4();
+    const _p = new THREE.Vector3();
+    const _q = new THREE.Quaternion();
+    const _s = new THREE.Vector3();
+    const _e = new THREE.Euler();
+    for (let i = 0; i < platforms.length; i++) {
+      const s = platforms[i];
+      const t1 = s.seed * s.seed;   // power curve: most small, few massive
+      const t2 = s.seed2 * s.seed2;
+      const w = 15 + t1 * 185;      // 15–200m
+      const d = 15 + t2 * 185;      // 15–200m
+      const h = 2 + (t1 + t2) * 0.5 * 13; // 2–15m, thicker when wider
+      _p.set(s.x, s.y, s.z);
+      _e.set(0, s.seed * Math.PI * 2, 0);
+      _q.setFromEuler(_e);
+      _s.set(w, h, d);
+      _m.compose(_p, _q, _s);
+      im.setMatrixAt(i, _m);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    im.receiveShadow = true;
+    im.castShadow = true;
+    structGroup.add(im);
+  }
+
+  // Rings — fly-through / grapple targets
+  const ringGeo = new THREE.TorusGeometry(1, 0.15, 8, 24);
+  const rings = structs.filter(s => s.type === "ring");
+  if (rings.length > 0) {
+    const im = new THREE.InstancedMesh(ringGeo, darkMat, rings.length);
+    const _m = new THREE.Matrix4();
+    const _p = new THREE.Vector3();
+    const _q = new THREE.Quaternion();
+    const _s = new THREE.Vector3();
+    const _e = new THREE.Euler();
+    for (let i = 0; i < rings.length; i++) {
+      const s = rings[i];
+      const t = s.seed * s.seed;
+      const scale = 8 + t * 72;  // 8–80m outer radius
+      _p.set(s.x, s.y, s.z);
+      _e.set(
+        Math.PI * 0.5 + (s.seed - 0.5) * 0.6,
+        s.seed2 * Math.PI * 2,
+        (s.seed2 - 0.5) * 0.5,
+      );
+      _q.setFromEuler(_e);
+      _s.setScalar(scale);
+      _m.compose(_p, _q, _s);
+      im.setMatrixAt(i, _m);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    im.castShadow = true;
+    structGroup.add(im);
+  }
+
+  // Columns — pillars, some thin spires, some massive towers
+  const colGeo = new THREE.CylinderGeometry(1, 1, 1, 10);
+  const columns = structs.filter(s => s.type === "column");
+  if (columns.length > 0) {
+    const im = new THREE.InstancedMesh(colGeo, structMat, columns.length);
+    const _m = new THREE.Matrix4();
+    const _p = new THREE.Vector3();
+    const _q = new THREE.Quaternion();
+    const _s = new THREE.Vector3();
+    for (let i = 0; i < columns.length; i++) {
+      const s = columns[i];
+      const t1 = s.seed * s.seed;
+      const t2 = s.seed2 * s.seed2;
+      const height = 30 + t1 * 220;  // 30–250m
+      const radius = 2 + t2 * 23;    // 2–25m
+      _p.set(s.x, s.y, s.z);
+      _q.identity();
+      _s.set(radius, height, radius);
+      _m.compose(_p, _q, _s);
+      im.setMatrixAt(i, _m);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    im.castShadow = true;
+    structGroup.add(im);
+  }
+
+  return structGroup;
 }
 
 export function createFlatTerrain(): TerrainResult {
@@ -394,29 +875,42 @@ export function createFlatTerrain(): TerrainResult {
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.85, flatShading: false, vertexColors: true,
   });
-  attachGroundGridShader(mat, FLAT_TERRAIN_SIZE / 60);
+  attachGroundGridShader(mat, FLAT_TERRAIN_SIZE / 150);
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   groundMeshes.add(mesh);
   group.add(groundMeshes);
 
-  // Mirror ceiling
-  const MIRROR_GAP = 120;
-  let maxHeight = 0;
+  // Ceiling — independent heightmap for distinct topology
+  const MIRROR_GAP = 300;
+  let maxFloorH = 0;
   const srcPos = geo.attributes.position;
   for (let i = 0; i < srcPos.count; i++) {
-    maxHeight = Math.max(maxHeight, srcPos.getY(i));
+    maxFloorH = Math.max(maxFloorH, srcPos.getY(i));
   }
-  const mirrorY = maxHeight * 2 + MIRROR_GAP;
 
-  const mirrorGeo = geo.clone();
-  const mirrorPos = mirrorGeo.attributes.position;
-  for (let i = 0; i < mirrorPos.count; i++) {
-    mirrorPos.setY(i, mirrorY - mirrorPos.getY(i));
+  const ceilGeo = new THREE.PlaneGeometry(FLAT_TERRAIN_SIZE, FLAT_TERRAIN_SIZE, FLAT_SEGMENTS, FLAT_SEGMENTS);
+  ceilGeo.rotateX(-Math.PI / 2);
+  const ceilPos = ceilGeo.attributes.position;
+  let maxCeilH = 0;
+  for (let i = 0; i < ceilPos.count; i++) {
+    const cx = ceilPos.getX(i);
+    const cz = ceilPos.getZ(i);
+    const ch = getCeilingHeight(cx, cz);
+    ceilPos.setY(i, ch);
+    maxCeilH = Math.max(maxCeilH, ch);
   }
-  mirrorGeo.computeVertexNormals();
-  const mirrorIdx = mirrorGeo.index;
+
+  const mirrorY = maxFloorH + maxCeilH + MIRROR_GAP;
+
+  // Place ceiling verts at mirrorY - ceilingHeight (hanging downward)
+  for (let i = 0; i < ceilPos.count; i++) {
+    ceilPos.setY(i, mirrorY - ceilPos.getY(i));
+  }
+  ceilGeo.computeVertexNormals();
+  // Flip winding so normals face downward (toward player)
+  const mirrorIdx = ceilGeo.index;
   if (mirrorIdx) {
     const arr = mirrorIdx.array;
     for (let i = 0; i < arr.length; i += 3) {
@@ -426,23 +920,29 @@ export function createFlatTerrain(): TerrainResult {
     }
     mirrorIdx.needsUpdate = true;
   }
-  mirrorGeo.computeVertexNormals();
-  applyVertexColors(mirrorGeo, "ceiling");
+  ceilGeo.computeVertexNormals();
+  applyVertexColors(ceilGeo, "ceiling");
 
   const mirrorMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.7, side: THREE.FrontSide, vertexColors: true,
+    color: 0xffffff, roughness: 0.6, side: THREE.FrontSide, vertexColors: true,
   });
-  attachGroundGridShader(mirrorMat, FLAT_TERRAIN_SIZE / 60);
+  attachGroundGridShader(mirrorMat, FLAT_TERRAIN_SIZE / 100);
 
   const ceilingMeshes = new THREE.Group();
-  const mirrorMesh = new THREE.Mesh(mirrorGeo, mirrorMat);
+  const mirrorMesh = new THREE.Mesh(ceilGeo, mirrorMat);
   ceilingMeshes.add(mirrorMesh);
   group.add(ceilingMeshes);
 
-  scatterFlatMarkers(group);
+  const structureMeshes = createFloatingStructures(mirrorY);
+  group.add(structureMeshes);
+
+  const markerGroup = new THREE.Group();
+  scatterFlatMarkers(markerGroup);
+  scatterCeilingMarkers(markerGroup, mirrorY);
+  group.add(markerGroup);
 
   return {
-    group, groundMeshes, ceilingMeshes, mirrorY, mapType: "flat",
+    group, groundMeshes, ceilingMeshes, structureMeshes, markerGroup, mirrorY, mapType: "flat",
     spawnPoints: FLAT_SPAWN_POINTS, groundMaterial: mat, ceilingMaterial: mirrorMat,
   };
 }
@@ -506,21 +1006,13 @@ function hash3(ix: number, iy: number, iz: number): number {
   return ((h ^ (h >> 16)) >>> 0) / 0xffffffff;
 }
 
-function scatterSphereMarkers(group: THREE.Group, geo: THREE.BufferGeometry, radius: number): void {
-  const orbGeo = new THREE.SphereGeometry(0.6, 10, 8);
-  const orbMat = new THREE.MeshStandardMaterial({
-    color: 0xddeeff, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.7,
-  });
-
-  const petalGeo = new THREE.CircleGeometry(0.25, 5);
-  const flowerColors = [0xe84393, 0xfd79a8, 0xffeaa7, 0xdfe6e9, 0xa29bfe, 0xff7675];
-  const flowerMats = flowerColors.map(
-    (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.6, side: THREE.DoubleSide }),
-  );
-
+function scatterSphereMarkers(markerGroup: THREE.Group, geo: THREE.BufferGeometry): void {
   const pos = geo.attributes.position;
   const norm = geo.attributes.normal;
   const step = Math.max(1, Math.floor(pos.count / 800));
+
+  const orbData: { x: number; y: number; z: number; s: number }[] = [];
+  const flowerData: { x: number; y: number; z: number; nx: number; ny: number; nz: number; colorIdx: number }[] = [];
 
   for (let i = 0; i < pos.count; i += step) {
     const density = hash3(
@@ -530,56 +1022,66 @@ function scatterSphereMarkers(group: THREE.Group, geo: THREE.BufferGeometry, rad
     );
     if (density < 0.4) continue;
 
-    const px = pos.getX(i);
-    const py = pos.getY(i);
-    const pz = pos.getZ(i);
-    const nx = norm.getX(i);
-    const ny = norm.getY(i);
-    const nz = norm.getZ(i);
+    const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
+    const nx = norm.getX(i), ny = norm.getY(i), nz = norm.getZ(i);
 
-    // Orbs float slightly inward from the surface (toward center)
     if (density > 0.75) {
-      const orb = new THREE.Mesh(orbGeo, orbMat);
-      const scale = 0.6 + hash3(i * 3, i * 5, i * 7) * 1.0;
-      orb.scale.setScalar(scale);
-      // Normal points inward (toward center) for inverted sphere
-      orb.position.set(
-        px + nx * 1.2 * scale,
-        py + ny * 1.2 * scale,
-        pz + nz * 1.2 * scale,
-      );
-      group.add(orb);
+      const s = 0.6 + hash3(i * 3, i * 5, i * 7) * 1.0;
+      orbData.push({ x: px + nx * 1.2 * s, y: py + ny * 1.2 * s, z: pz + nz * 1.2 * s, s });
+    } else if (density > 0.5) {
+      const colorIdx = Math.floor(hash3(i, i * 2, i * 3) * 6);
+      flowerData.push({ x: px, y: py, z: pz, nx, ny, nz, colorIdx });
     }
+  }
 
-    // Flower patches on the surface
-    if (density > 0.5 && density <= 0.75) {
-      const mat = flowerMats[Math.floor(hash3(i, i * 2, i * 3) * flowerMats.length)];
-      const petalCount = 4 + Math.floor(hash3(i * 3, i, i * 2) * 3);
-      const stem = new THREE.Group();
-      stem.position.set(px, py, pz);
+  const _m = new THREE.Matrix4();
+  const _q = new THREE.Quaternion();
+  const _s = new THREE.Vector3();
+  const _p = new THREE.Vector3();
+  const _yUp = new THREE.Vector3(0, 1, 0);
+  const _nrm = new THREE.Vector3();
 
-      // Orient stem so its Y axis points inward along the normal
-      const up = new THREE.Vector3(nx, ny, nz);
-      const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
-      stem.quaternion.copy(quat);
-
-      for (let p = 0; p < petalCount; p++) {
-        const petal = new THREE.Mesh(petalGeo, mat);
-        const angle = (p / petalCount) * Math.PI * 2;
-        const tilt = 0.3 + hash3(p, i, p + i) * 0.4;
-        petal.position.set(Math.cos(angle) * 0.15, 0.5, Math.sin(angle) * 0.15);
-        petal.rotation.set(tilt, angle, 0);
-        stem.add(petal);
-      }
-
-      const center = new THREE.Mesh(
-        new THREE.SphereGeometry(0.08, 6, 4),
-        new THREE.MeshStandardMaterial({ color: 0xfdcb6e, roughness: 0.5 }),
-      );
-      center.position.y = 0.55;
-      stem.add(center);
-      group.add(stem);
+  if (orbData.length > 0) {
+    const orbGeo = new THREE.SphereGeometry(0.6, 8, 6);
+    const orbMat = new THREE.MeshStandardMaterial({
+      color: 0xddeeff, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.7,
+    });
+    const orbIM = new THREE.InstancedMesh(orbGeo, orbMat, orbData.length);
+    for (let i = 0; i < orbData.length; i++) {
+      const d = orbData[i];
+      _p.set(d.x, d.y, d.z);
+      _s.setScalar(d.s);
+      _m.compose(_p, _q.identity(), _s);
+      orbIM.setMatrixAt(i, _m);
     }
+    orbIM.instanceMatrix.needsUpdate = true;
+    markerGroup.add(orbIM);
+  }
+
+  const flowerColors = [0xe84393, 0xfd79a8, 0xffeaa7, 0xdfe6e9, 0xa29bfe, 0xff7675];
+  const buckets: typeof flowerData[] = flowerColors.map(() => []);
+  for (const f of flowerData) buckets[f.colorIdx].push(f);
+
+  const petalGeo = new THREE.CircleGeometry(0.3, 5);
+  for (let ci = 0; ci < flowerColors.length; ci++) {
+    const bucket = buckets[ci];
+    if (bucket.length === 0) continue;
+    const mat = new THREE.MeshStandardMaterial({
+      color: flowerColors[ci], roughness: 0.6, side: THREE.DoubleSide,
+    });
+    const im = new THREE.InstancedMesh(petalGeo, mat, bucket.length);
+    for (let i = 0; i < bucket.length; i++) {
+      const f = bucket[i];
+      _p.set(f.x, f.y, f.z);
+      _nrm.set(f.nx, f.ny, f.nz);
+      _q.setFromUnitVectors(_yUp, _nrm);
+      _p.addScaledVector(_nrm, 0.4);
+      _s.set(1, 1, 1);
+      _m.compose(_p, _q, _s);
+      im.setMatrixAt(i, _m);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    markerGroup.add(im);
   }
 }
 
@@ -668,7 +1170,9 @@ export function createSphereTerrain(): TerrainResult {
   groundMeshes.add(mesh);
   group.add(groundMeshes);
 
-  scatterSphereMarkers(group, geo, SPHERE_RADIUS);
+  const markerGroup = new THREE.Group();
+  scatterSphereMarkers(markerGroup, geo);
+  group.add(markerGroup);
 
   generateSphereSpawns();
 
@@ -676,6 +1180,8 @@ export function createSphereTerrain(): TerrainResult {
     group,
     groundMeshes,
     ceilingMeshes,
+    structureMeshes: new THREE.Group(),
+    markerGroup,
     mirrorY: 0,
     mapType: "sphere",
     sphereCenter: SPHERE_CENTER.clone(),

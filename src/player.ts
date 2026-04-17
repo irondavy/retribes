@@ -4,7 +4,7 @@ import { tuning } from "./constants";
 import type { MapType } from "./terrain";
 
 const RAY_ORIGIN_OFFSET = 500;
-const GRAVITY_BLEND_ZONE = 30;
+const GRAVITY_BLEND_ZONE = 50;
 
 export class PlayerController {
   readonly camera: THREE.PerspectiveCamera;
@@ -15,6 +15,9 @@ export class PlayerController {
   skiing = false;
   jetting = false;
   energy = 100;
+
+  /** Absorbed normal velocity on the most recent collision (m/s). Resets each frame. */
+  lastImpact = 0;
 
   /** +1 = normal (down), -1 = inverted (up toward ceiling). Only used in flat mode. */
   gravitySign = 1;
@@ -31,9 +34,14 @@ export class PlayerController {
 
   /** Grapple state — public so main.ts can draw the rope */
   grappleAttached = false;
+  grappleTraveling = false;
   readonly grappleAnchor = new THREE.Vector3();
+  readonly grappleHookPos = new THREE.Vector3();
   grappleRopeLength = 0;
   private grappleWasDown = false;
+  private readonly grappleDir = new THREE.Vector3();
+  private grappleDistTraveled = 0;
+  private grappleWasAirborne = false;
 
   private readonly quatYaw = new THREE.Quaternion();
   private readonly quatPitch = new THREE.Quaternion();
@@ -60,11 +68,22 @@ export class PlayerController {
 
   private floorMeshes: THREE.Object3D[] = [];
   private ceilingMeshes: THREE.Object3D[] = [];
+  private structureMeshes: THREE.Object3D[] = [];
 
-  // Reusable temp vectors to reduce allocations in update()
+  // Pre-allocated temporaries — never allocate in per-frame methods
   private readonly _gravDir = new THREE.Vector3();
   private readonly _upDir = new THREE.Vector3();
-  private readonly _tmpVec = new THREE.Vector3();
+  private readonly _tv0 = new THREE.Vector3();
+  private readonly _tv1 = new THREE.Vector3();
+  private readonly _tv2 = new THREE.Vector3();
+  private readonly _tv3 = new THREE.Vector3();
+  private readonly _tv4 = new THREE.Vector3();
+  private readonly _tv5 = new THREE.Vector3();
+  private readonly _tv6 = new THREE.Vector3();
+  private readonly _tv7 = new THREE.Vector3();
+  private readonly _tq0 = new THREE.Quaternion();
+  private readonly _tq1 = new THREE.Quaternion();
+  private readonly _tm0 = new THREE.Matrix4();
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -73,6 +92,7 @@ export class PlayerController {
   setTerrain(
     floorGroup: THREE.Group,
     ceilingGroup: THREE.Group,
+    structureGroup: THREE.Group,
     mirrorY: number,
     mapType: MapType = "flat",
     sphereCenter?: THREE.Vector3,
@@ -85,11 +105,15 @@ export class PlayerController {
 
     this.floorMeshes = [];
     this.ceilingMeshes = [];
+    this.structureMeshes = [];
     floorGroup.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) this.floorMeshes.push(child);
     });
     ceilingGroup.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) this.ceilingMeshes.push(child);
+    });
+    structureGroup.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) this.structureMeshes.push(child);
     });
   }
 
@@ -117,10 +141,7 @@ export class PlayerController {
     if (this.mapType === "sphere") {
       const hit = this.sampleSurfaceSphere();
       if (hit) {
-        // Player is inside the sphere. Offset from surface toward center by playerHeight.
-        const towardCenter = new THREE.Vector3()
-          .subVectors(this.sphereCenter, hit.point)
-          .normalize();
+        const towardCenter = this._tv0.subVectors(this.sphereCenter, hit.point).normalize();
         this.position.copy(hit.point).addScaledVector(towardCenter, tuning.playerHeight);
         this.groundNormal.copy(hit.normal);
       }
@@ -129,7 +150,6 @@ export class PlayerController {
       return;
     }
 
-    // Flat mode
     if (this.gravitySign >= 0) {
       const { height } = this.sampleSurfaceFlat(this.position.x, this.position.z, "floor");
       this.position.y = height + tuning.playerHeight;
@@ -152,23 +172,23 @@ export class PlayerController {
     this.grounded = false;
     this.gravitySign = 1;
     this.grappleAttached = false;
+    this.grappleTraveling = false;
 
     if (this.mapType === "sphere") {
-      // Orient camera so "up" points toward sphere center (away from inner surface)
-      const up = this._tmpVec.subVectors(this.sphereCenter, this.position).normalize();
-      const fwd = new THREE.Vector3();
+      const up = this._tv0.subVectors(this.sphereCenter, this.position).normalize();
+      const fwd = this._tv1;
       if (Math.abs(up.y) < 0.99) {
-        fwd.crossVectors(new THREE.Vector3(0, 1, 0), up).normalize();
+        fwd.set(0, 1, 0).cross(up).normalize();
       } else {
-        fwd.crossVectors(new THREE.Vector3(1, 0, 0), up).normalize();
+        fwd.set(1, 0, 0).cross(up).normalize();
       }
-      const rotQuat = new THREE.Quaternion().setFromAxisAngle(up, facingAngle);
-      fwd.applyQuaternion(rotQuat);
+      this._tq0.setFromAxisAngle(up, facingAngle);
+      fwd.applyQuaternion(this._tq0);
 
-      const rightVec = new THREE.Vector3().crossVectors(fwd, up).normalize();
-      const correctedFwd = new THREE.Vector3().crossVectors(up, rightVec).normalize();
-      const m = new THREE.Matrix4().makeBasis(rightVec, up, correctedFwd.negate());
-      this.camera.quaternion.setFromRotationMatrix(m);
+      const rightVec = this._tv2.crossVectors(fwd, up).normalize();
+      const correctedFwd = this._tv3.crossVectors(up, rightVec).normalize();
+      this._tm0.makeBasis(rightVec, up, correctedFwd.negate());
+      this.camera.quaternion.setFromRotationMatrix(this._tm0);
     } else {
       this.camera.quaternion.setFromAxisAngle(this.yawAxis, facingAngle);
     }
@@ -178,7 +198,7 @@ export class PlayerController {
 
   get speed(): number {
     if (this.mapType === "sphere") {
-      const radialDir = this._tmpVec.subVectors(this.position, this.sphereCenter);
+      const radialDir = this._tv0.subVectors(this.position, this.sphereCenter);
       if (radialDir.lengthSq() < 0.001) return this.velocity.length();
       radialDir.normalize();
       const radialSpeed = this.velocity.dot(radialDir);
@@ -198,6 +218,7 @@ export class PlayerController {
   }
 
   update(dt: number, input: InputState): void {
+    this.lastImpact = 0;
     if (this.mapType === "sphere") {
       this.updateSphere(dt, input);
     } else {
@@ -216,23 +237,19 @@ export class PlayerController {
 
     const { dx, dy } = input.consumeMouse();
 
-    // Inside-sphere: "up" is toward center, "down"/gravity is outward toward the surface
-    const towardCenter = new THREE.Vector3().subVectors(this.sphereCenter, this.position).normalize();
-    const outward = towardCenter.clone().negate();
+    const towardCenter = this._tv0.subVectors(this.sphereCenter, this.position).normalize();
+    const outward = this._tv1.copy(towardCenter).negate();
 
-    // Mouse look: yaw around the player's "up" (toward center), pitch around local right
-    const yawQ = new THREE.Quaternion().setFromAxisAngle(towardCenter, -dx * mouseSensitivity);
+    this._tq0.setFromAxisAngle(towardCenter, -dx * mouseSensitivity);
     this.quatPitch.setFromAxisAngle(this.pitchAxis, -dy * mouseSensitivity);
-    this.camera.quaternion.premultiply(yawQ);
+    this.camera.quaternion.premultiply(this._tq0);
     this.camera.quaternion.multiply(this.quatPitch);
     this.camera.quaternion.normalize();
 
-    // Continuously align camera's local up with towardCenter
     this.applySphereCamera(dt, towardCenter);
 
-    // Movement: forward/right projected onto the tangent plane
-    const camFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-    const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const camFwd = this._tv2.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const camRight = this._tv3.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
 
     this.forward.copy(camFwd).addScaledVector(towardCenter, -camFwd.dot(towardCenter));
     if (this.forward.lengthSq() > 0.001) this.forward.normalize();
@@ -240,7 +257,7 @@ export class PlayerController {
     this.right.copy(camRight).addScaledVector(towardCenter, -camRight.dot(towardCenter));
     if (this.right.lengthSq() > 0.001) this.right.normalize();
 
-    const wishDir = new THREE.Vector3();
+    const wishDir = this._tv4.set(0, 0, 0);
     if (input.isDown("KeyW")) wishDir.add(this.forward);
     if (input.isDown("KeyS")) wishDir.sub(this.forward);
     if (input.isDown("KeyD")) wishDir.add(this.right);
@@ -250,45 +267,42 @@ export class PlayerController {
 
     this.skiing = input.isDown("ShiftLeft") || input.isDown("ShiftRight");
 
-    // Jetpack pushes toward center (away from surface, against gravity)
     const wantsJet = input.isMouseDown(2) || input.isDown("Space");
-    this.jetting = wantsJet && this.energy > 0;
+    this.jetting = wantsJet && this.energy >= 1;
 
     if (this.jetting) {
+      this.energy = Math.max(0, this.energy - jetEnergyDrain * dt);
+      if (this.energy <= 0) { this.energy = 0; this.jetting = false; }
+    }
+    if (this.jetting) {
       if (this.grounded) {
-        // Cancel velocity toward surface (outward)
         const velOutward = this.velocity.dot(outward);
         if (velOutward > 0) {
           this.velocity.addScaledVector(outward, -velOutward);
         }
       }
-      // Thrust toward center
       this.velocity.addScaledVector(towardCenter, jetThrust * dt);
       if (hasInput) {
         this.velocity.addScaledVector(wishDir, jetThrust * jetForwardBias * dt);
       }
-      this.energy = Math.max(0, this.energy - jetEnergyDrain * dt);
     } else {
       this.energy = Math.min(100, this.energy + jetEnergyRegen * dt);
     }
 
-    // Gravity: pull outward toward the inner surface
     this.velocity.addScaledVector(outward, gravity * dt);
 
-    // Grounded behaviour
     if (this.grounded && !this.jetting) {
       if (this.skiing) {
-        const gravVec = outward.clone().multiplyScalar(gravity);
-        const normalComp = this.groundNormal.clone().multiplyScalar(gravVec.dot(this.groundNormal));
-        const slopeForce = gravVec.clone().sub(normalComp);
-        this.velocity.add(slopeForce.multiplyScalar(dt));
+        const gravVec = this._tv5.copy(outward).multiplyScalar(gravity);
+        const normalDot = gravVec.dot(this.groundNormal);
+        const slopeForce = this._tv6.copy(gravVec).addScaledVector(this.groundNormal, -normalDot);
+        this.velocity.addScaledVector(slopeForce, dt);
 
         if (hasInput) {
           this.velocity.addScaledVector(wishDir, skiSteerFactor * walkSpeed * dt);
         }
 
         const skiF = Math.exp(-skiFriction * dt);
-        // Damp only tangential velocity
         const radialSpeed = this.velocity.dot(outward);
         this.velocity.addScaledVector(outward, -radialSpeed);
         this.velocity.multiplyScalar(skiF);
@@ -307,7 +321,6 @@ export class PlayerController {
         }
       }
 
-      // Cancel velocity toward surface (outward)
       const velOutward = this.velocity.dot(outward);
       if (velOutward > 0) {
         this.velocity.addScaledVector(outward, -velOutward);
@@ -323,76 +336,45 @@ export class PlayerController {
     const grappleJustPressed = grappleDown && !this.grappleWasDown;
     this.grappleWasDown = grappleDown;
 
-    if (grappleJustPressed) {
-      const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      this.raycaster.set(this.position, camDir);
-      this.raycaster.far = grappleRange;
-      const hits = this.raycaster.intersectObjects(this.floorMeshes, false);
-      this.raycaster.far = Infinity;
-      if (hits.length > 0) {
-        this.grappleAttached = true;
-        this.grappleAnchor.copy(hits[0].point);
-        this.grappleRopeLength = this.position.distanceTo(this.grappleAnchor);
-      }
+    if (grappleJustPressed && !this.grappleAttached && !this.grappleTraveling) {
+      this.grappleTraveling = true;
+      this.grappleHookPos.copy(this.position);
+      this.grappleDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      this.grappleDistTraveled = 0;
     }
-    if (!grappleDown) this.grappleAttached = false;
-
-    if (this.grappleAttached) {
-      const toAnchor = new THREE.Vector3().subVectors(this.grappleAnchor, this.position);
-      const dist = toAnchor.length();
-      if (dist > 0.01) {
-        const dir = toAnchor.divideScalar(dist);
-        this.velocity.addScaledVector(dir, grapplePull * dt);
-        if (dist > this.grappleRopeLength) {
-          const radialSpeed = this.velocity.dot(dir);
-          if (radialSpeed < 0) {
-            this.velocity.addScaledVector(dir, -radialSpeed * grappleSwingDamping);
-          }
-          this.position.addScaledVector(dir, (dist - this.grappleRopeLength) * 0.5);
-        }
-      }
+    if (!grappleDown) {
+      this.grappleAttached = false;
+      this.grappleTraveling = false;
     }
 
-    // Integrate
+    this.updateGrappleProjectile(dt, this.floorMeshes, grappleRange, grapplePull, grappleSwingDamping);
+
     this.position.addScaledVector(this.velocity, dt);
 
-    // Ground collision: player is inside sphere, surface is outward.
-    // Player's feet are at distFromCenter + playerHeight (outward from head).
-    // Penetrating = feet have gone past the surface (farther from center than surface).
+    // Ground collision
     const hit = this.sampleSurfaceSphere();
     if (hit) {
       const distFromCenter = this.position.distanceTo(this.sphereCenter);
       const surfaceDist = hit.point.distanceTo(this.sphereCenter);
-      const feetDist = distFromCenter + playerHeight; // feet are outward from head
+      const feetDist = distFromCenter + playerHeight;
 
       const jetLaunching = this.jetting && this.velocity.dot(towardCenter) > 0;
       const penetrating = feetDist > surfaceDist;
       const snapThreshold = surfaceDist - tuning.groundSnapThreshold;
-
-      // Snapped position: head at surfaceDist - playerHeight from center
       const snappedDist = surfaceDist - playerHeight;
 
-      if (penetrating && !(jetLaunching && feetDist - surfaceDist < 0.5)) {
-        const dirFromCenter = new THREE.Vector3().subVectors(this.position, this.sphereCenter).normalize();
-        this.position.copy(this.sphereCenter).addScaledVector(dirFromCenter, snappedDist);
-        this.groundNormal.copy(hit.normal);
+      const needsSnap = penetrating && !(jetLaunching && feetDist - surfaceDist < 0.5);
+      const needsGroundSnap = !needsSnap && !jetLaunching && distFromCenter >= snapThreshold - playerHeight;
 
-        if (!this.grounded) {
-          // Cancel velocity toward surface (outward component)
-          const velDotOutward = this.velocity.dot(dirFromCenter);
-          if (velDotOutward > 0) {
-            this.velocity.addScaledVector(dirFromCenter, -velDotOutward);
-          }
-        }
-        this.grounded = true;
-      } else if (!jetLaunching && distFromCenter >= snapThreshold - playerHeight) {
-        const dirFromCenter = new THREE.Vector3().subVectors(this.position, this.sphereCenter).normalize();
+      if (needsSnap || needsGroundSnap) {
+        const dirFromCenter = this._tv5.subVectors(this.position, this.sphereCenter).normalize();
         this.position.copy(this.sphereCenter).addScaledVector(dirFromCenter, snappedDist);
         this.groundNormal.copy(hit.normal);
 
         if (!this.grounded) {
           const velDotOutward = this.velocity.dot(dirFromCenter);
           if (velDotOutward > 0) {
+            this.lastImpact = Math.max(this.lastImpact, velDotOutward);
             this.velocity.addScaledVector(dirFromCenter, -velDotOutward);
           }
         }
@@ -407,67 +389,77 @@ export class PlayerController {
     this.camera.position.copy(this.position);
   }
 
-  /** Keep the camera's local up aligned with the sphere surface normal. */
   private applySphereCamera(dt: number, targetUp: THREE.Vector3): void {
     const speed = tuning.gravityRotSpeed;
-    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const camUp = this._tv5.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const camForward = this._tv6.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
 
-    const currentUpProj = camUp.clone().addScaledVector(camForward, -camUp.dot(camForward)).normalize();
-    const targetUpProj = targetUp.clone().addScaledVector(camForward, -targetUp.dot(camForward));
+    const currentUpProj = this._tv7.copy(camUp).addScaledVector(camForward, -camUp.dot(camForward));
+    if (currentUpProj.lengthSq() < 0.0001) return;
+    currentUpProj.normalize();
+
+    // Reuse _tv5 (camUp no longer needed) for targetUpProj
+    const targetUpProj = this._tv5.copy(targetUp).addScaledVector(camForward, -targetUp.dot(camForward));
 
     if (targetUpProj.lengthSq() > 0.001) {
       targetUpProj.normalize();
       const dot = Math.max(-1, Math.min(1, currentUpProj.dot(targetUpProj)));
-      const cross = new THREE.Vector3().crossVectors(currentUpProj, targetUpProj);
+      const cross = this._upDir.crossVectors(currentUpProj, targetUpProj);
       const angleSigned = Math.atan2(cross.dot(camForward), dot);
 
-      // Use higher speed for sphere since the up direction changes continuously
       const correction = angleSigned * Math.min(1, speed * 3 * dt);
       if (Math.abs(correction) > 0.0001) {
-        const rollQuat = new THREE.Quaternion().setFromAxisAngle(camForward, correction);
-        this.camera.quaternion.premultiply(rollQuat);
+        this._tq0.setFromAxisAngle(camForward, correction);
+        this.camera.quaternion.premultiply(this._tq0);
         this.camera.quaternion.normalize();
       }
     }
   }
 
-  /** Raycast outward from player to find the inner sphere surface. */
+  // Reusable return value for sampleSurfaceSphere — avoids allocation per call
+  private readonly _sphereHitPoint = new THREE.Vector3();
+  private readonly _sphereHitNormal = new THREE.Vector3();
+  private readonly _sphereHitResult = { point: this._sphereHitPoint, normal: this._sphereHitNormal };
+
   private sampleSurfaceSphere(): { point: THREE.Vector3; normal: THREE.Vector3 } | null {
     if (this.floorMeshes.length === 0) return null;
 
-    // Cast from player position outward (away from center) to hit the inner surface
-    const outward = new THREE.Vector3()
-      .subVectors(this.position, this.sphereCenter)
-      .normalize();
+    const outward = this._gravDir.subVectors(this.position, this.sphereCenter).normalize();
 
     this.raycaster.set(this.position, outward);
     const hits = this.raycaster.intersectObjects(this.floorMeshes, false);
 
     if (hits.length > 0) {
       const best = hits[0];
-      // Normal should point inward (toward center) for the inverted sphere
-      const normal = best.face
-        ? best.face.normal.clone().normalize()
-        : outward.clone().negate();
-      return { point: best.point.clone(), normal };
+      this._sphereHitPoint.copy(best.point);
+      if (best.face) {
+        this._sphereHitNormal.copy(best.face.normal).normalize();
+      } else {
+        this._sphereHitNormal.copy(outward).negate();
+      }
+      return this._sphereHitResult;
     }
 
-    // Fallback: try from center toward the player direction
     this.raycaster.set(this.sphereCenter, outward);
     const fallbackHits = this.raycaster.intersectObjects(this.floorMeshes, false);
     if (fallbackHits.length > 0) {
       const best = fallbackHits[0];
-      const normal = best.face
-        ? best.face.normal.clone().normalize()
-        : outward.clone().negate();
-      return { point: best.point.clone(), normal };
+      this._sphereHitPoint.copy(best.point);
+      if (best.face) {
+        this._sphereHitNormal.copy(best.face.normal).normalize();
+      } else {
+        this._sphereHitNormal.copy(outward).negate();
+      }
+      return this._sphereHitResult;
     }
 
     return null;
   }
 
   // ─── FLAT UPDATE (original logic) ───────────────────────────────
+
+  // Pre-allocated mesh list for flat grapple raycasting
+  private readonly _allMeshes: THREE.Object3D[] = [];
 
   private updateFlat(dt: number, input: InputState): void {
     const {
@@ -479,15 +471,13 @@ export class PlayerController {
 
     const { dx, dy } = input.consumeMouse();
 
-    // Yaw around camera's local up so it stays correct when inverted
-    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const camUp = this._tv0.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
     this.quatYaw.setFromAxisAngle(camUp, -dx * mouseSensitivity);
     this.quatPitch.setFromAxisAngle(this.pitchAxis, -dy * mouseSensitivity);
     this.camera.quaternion.premultiply(this.quatYaw);
     this.camera.quaternion.multiply(this.quatPitch);
     this.camera.quaternion.normalize();
 
-    // Gravity direction: blend based on distance from midpoint
     const midpoint = this.mirrorY / 2;
     const distFromMid = this.position.y - midpoint;
     const rawBlend = distFromMid / GRAVITY_BLEND_ZONE;
@@ -509,7 +499,7 @@ export class PlayerController {
     this.right.y = 0;
     if (this.right.lengthSq() > 0.001) this.right.normalize();
 
-    const wishDir = new THREE.Vector3();
+    const wishDir = this._tv1.set(0, 0, 0);
     if (input.isDown("KeyW")) wishDir.add(this.forward);
     if (input.isDown("KeyS")) wishDir.sub(this.forward);
     if (input.isDown("KeyD")) wishDir.add(this.right);
@@ -520,8 +510,12 @@ export class PlayerController {
     this.skiing = input.isDown("ShiftLeft") || input.isDown("ShiftRight");
 
     const wantsJet = input.isMouseDown(2) || input.isDown("Space");
-    this.jetting = wantsJet && this.energy > 0;
+    this.jetting = wantsJet && this.energy >= 1;
 
+    if (this.jetting) {
+      this.energy = Math.max(0, this.energy - jetEnergyDrain * dt);
+      if (this.energy <= 0) { this.energy = 0; this.jetting = false; }
+    }
     if (this.jetting) {
       if (this.grounded) {
         if (gravSign > 0 && this.velocity.y < 0) this.velocity.y = 0;
@@ -532,7 +526,6 @@ export class PlayerController {
         this.velocity.x += wishDir.x * jetThrust * jetForwardBias * dt;
         this.velocity.z += wishDir.z * jetThrust * jetForwardBias * dt;
       }
-      this.energy = Math.max(0, this.energy - jetEnergyDrain * dt);
     } else {
       this.energy = Math.min(100, this.energy + jetEnergyRegen * dt);
     }
@@ -541,15 +534,13 @@ export class PlayerController {
 
     if (this.grounded && !this.jetting) {
       if (this.skiing) {
-        const gravVec = new THREE.Vector3(0, -gravSign * effectiveGravity, 0);
-        const normalComp = this.groundNormal
-          .clone()
-          .multiplyScalar(gravVec.dot(this.groundNormal));
-        const slopeForce = gravVec.clone().sub(normalComp);
-        this.velocity.add(slopeForce.multiplyScalar(dt));
+        const gravVec = this._tv2.set(0, -gravSign * effectiveGravity, 0);
+        const normalDot = gravVec.dot(this.groundNormal);
+        const slopeForce = this._tv3.copy(gravVec).addScaledVector(this.groundNormal, -normalDot);
+        this.velocity.addScaledVector(slopeForce, dt);
 
         if (hasInput) {
-          this.velocity.add(wishDir.clone().multiplyScalar(skiSteerFactor * walkSpeed * dt));
+          this.velocity.addScaledVector(wishDir, skiSteerFactor * walkSpeed * dt);
         }
 
         const skiF = Math.exp(-skiFriction * dt);
@@ -580,39 +571,24 @@ export class PlayerController {
     const grappleJustPressed = grappleDown && !this.grappleWasDown;
     this.grappleWasDown = grappleDown;
 
-    if (grappleJustPressed) {
-      const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      this.raycaster.set(this.position, camDir);
-      this.raycaster.far = grappleRange;
-      const allMeshes = [...this.floorMeshes, ...this.ceilingMeshes];
-      const hits = this.raycaster.intersectObjects(allMeshes, false);
-      this.raycaster.far = Infinity;
-      if (hits.length > 0) {
-        this.grappleAttached = true;
-        this.grappleAnchor.copy(hits[0].point);
-        this.grappleRopeLength = this.position.distanceTo(this.grappleAnchor);
-      }
+    if (grappleJustPressed && !this.grappleAttached && !this.grappleTraveling) {
+      this.grappleTraveling = true;
+      this.grappleHookPos.copy(this.position);
+      this.grappleDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      this.grappleDistTraveled = 0;
     }
 
-    if (!grappleDown) this.grappleAttached = false;
-
-    if (this.grappleAttached) {
-      const toAnchor = new THREE.Vector3().subVectors(this.grappleAnchor, this.position);
-      const dist = toAnchor.length();
-      if (dist > 0.01) {
-        const dir = toAnchor.divideScalar(dist);
-        this.velocity.addScaledVector(dir, grapplePull * dt);
-        if (dist > this.grappleRopeLength) {
-          const radialSpeed = this.velocity.dot(dir);
-          if (radialSpeed < 0) {
-            this.velocity.addScaledVector(dir, -radialSpeed * grappleSwingDamping);
-          }
-          this.position.addScaledVector(dir, (dist - this.grappleRopeLength) * 0.5);
-        }
-      }
+    if (!grappleDown) {
+      this.grappleAttached = false;
+      this.grappleTraveling = false;
     }
 
-    // Integrate
+    this._allMeshes.length = 0;
+    for (let i = 0; i < this.floorMeshes.length; i++) this._allMeshes.push(this.floorMeshes[i]);
+    for (let i = 0; i < this.ceilingMeshes.length; i++) this._allMeshes.push(this.ceilingMeshes[i]);
+    for (let i = 0; i < this.structureMeshes.length; i++) this._allMeshes.push(this.structureMeshes[i]);
+    this.updateGrappleProjectile(dt, this._allMeshes, grappleRange, grapplePull, grappleSwingDamping);
+
     this.position.addScaledVector(this.velocity, dt);
 
     // Ground / ceiling collision
@@ -649,24 +625,17 @@ export class PlayerController {
 
     const hardPenThreshold = jetLaunching ? 0.5 : 0;
 
-    if (penetrating && penetrationDepth > hardPenThreshold) {
+    const needsSnap = penetrating && penetrationDepth > hardPenThreshold;
+    const needsGroundSnap = !needsSnap && !jetLaunching && snapZone;
+
+    if (needsSnap || needsGroundSnap) {
       this.position.y = snappedY;
       this.groundNormal.copy(normal);
       if (!this.grounded) {
         const velDotN = this.velocity.dot(this.groundNormal);
         const velTowardSurface = onCeiling ? velDotN > 0 : velDotN < 0;
         if (velTowardSurface) {
-          this.velocity.addScaledVector(this.groundNormal, -velDotN);
-        }
-      }
-      this.grounded = true;
-    } else if (!jetLaunching && snapZone) {
-      this.position.y = snappedY;
-      this.groundNormal.copy(normal);
-      if (!this.grounded) {
-        const velDotN = this.velocity.dot(this.groundNormal);
-        const velTowardSurface = onCeiling ? velDotN > 0 : velDotN < 0;
-        if (velTowardSurface) {
+          this.lastImpact = Math.max(this.lastImpact, Math.abs(velDotN));
           this.velocity.addScaledVector(this.groundNormal, -velDotN);
         }
       }
@@ -675,20 +644,198 @@ export class PlayerController {
       this.grounded = false;
     }
 
+    // Structure collision — push out of floating obstacles
+    if (this.structureMeshes.length > 0) {
+      this.resolveStructureCollision(playerHeight);
+
+      // Ground check against structures: if not already grounded by terrain,
+      // cast a short ray downward (toward gravity) to detect standing on a structure.
+      if (!this.grounded) {
+        const downDir = this._tv3.set(0, -gravSign, 0);
+        const savedFar = this.raycaster.far;
+        this.raycaster.set(this.position, downDir);
+        this.raycaster.far = playerHeight + groundSnapThreshold;
+        const hits = this.raycaster.intersectObjects(this.structureMeshes, false);
+        if (hits.length > 0) {
+          const hit = hits[0];
+          if (hit.distance <= playerHeight + groundSnapThreshold) {
+            const snappedY = hit.point.y + gravSign * playerHeight;
+            this.position.y = snappedY;
+            this.groundNormal.set(0, gravSign, 0);
+            if (hit.face) this.groundNormal.copy(hit.face.normal);
+            const velDotN = this.velocity.dot(this.groundNormal);
+            const velTowardSurface = onCeiling ? velDotN > 0 : velDotN < 0;
+            if (velTowardSurface) {
+              this.lastImpact = Math.max(this.lastImpact, Math.abs(velDotN));
+              this.velocity.addScaledVector(this.groundNormal, -velDotN);
+            }
+            this.grounded = true;
+          }
+        }
+        this.raycaster.far = savedFar;
+      }
+    }
+
     this.camera.position.copy(this.position);
   }
 
+  private resolveStructureCollision(playerHeight: number): void {
+    const probeRadius = playerHeight;
+    const savedFar = this.raycaster.far;
+    const dirs = [
+      this._tv4.set(1, 0, 0), this._tv5.set(-1, 0, 0),
+      this._tv6.set(0, 1, 0), this._tv7.set(0, -1, 0),
+      this._tv0.set(0, 0, 1), this._tv1.set(0, 0, -1),
+    ];
+    for (const dir of dirs) {
+      this.raycaster.set(this.position, dir);
+      this.raycaster.far = probeRadius;
+      const hits = this.raycaster.intersectObjects(this.structureMeshes, false);
+      if (hits.length > 0) {
+        const hit = hits[0];
+        const pushDist = probeRadius - hit.distance;
+        if (pushDist > 0) {
+          this.position.addScaledVector(dir, -pushDist);
+          const hitNormal = hit.face
+            ? this._tv2.copy(hit.face.normal)
+            : this._tv2.copy(dir).negate();
+          const velDotN = this.velocity.dot(hitNormal);
+          if (velDotN < 0) {
+            this.lastImpact = Math.max(this.lastImpact, Math.abs(velDotN));
+            this.velocity.addScaledVector(hitNormal, -velDotN);
+          }
+        }
+      }
+    }
+    this.raycaster.far = savedFar;
+  }
+
+  private updateGrappleProjectile(
+    dt: number, meshes: THREE.Object3D[],
+    range: number, pull: number, swingDamping: number,
+  ): void {
+    if (this.grappleTraveling) {
+      const step = tuning.grappleSpeed * dt;
+      this.raycaster.set(this.grappleHookPos, this.grappleDir);
+      this.raycaster.far = step;
+      const hits = this.raycaster.intersectObjects(meshes, false);
+      this.raycaster.far = Infinity;
+
+      if (hits.length > 0) {
+        this.grappleHookPos.copy(hits[0].point);
+        this.grappleAnchor.copy(hits[0].point);
+        this.grappleTraveling = false;
+        this.grappleAttached = true;
+        this.grappleWasAirborne = !this.grounded;
+        this.grappleRopeLength = this.position.distanceTo(this.grappleAnchor);
+
+        // Connect boost: initial impulse toward anchor + upward bias in pendulum mode
+        if (tuning.grappleConnectBoost > 0 && this.grappleRopeLength > 1) {
+          const toAnchor = this._tv5.subVectors(this.grappleAnchor, this.position).normalize();
+          this.velocity.addScaledVector(toAnchor, tuning.grappleConnectBoost);
+          if (tuning.grappleMode === "pendulum" && tuning.grappleConnectUpBias > 0) {
+            if (this.mapType === "sphere") {
+              const upDir = this._tv6.subVectors(this.sphereCenter, this.position).normalize();
+              this.velocity.addScaledVector(upDir, tuning.grappleConnectUpBias);
+            } else {
+              this.velocity.y += this.gravitySign * tuning.grappleConnectUpBias;
+            }
+          }
+        }
+      } else {
+        this.grappleHookPos.addScaledVector(this.grappleDir, step);
+        this.grappleDistTraveled += step;
+        if (this.grappleDistTraveled >= range) {
+          this.grappleTraveling = false;
+        }
+      }
+    }
+
+    if (this.grappleAttached) {
+      if (tuning.grappleMode === "pendulum") {
+        this.updateGrapplePendulum(dt);
+      } else {
+        this.updateGrappleWinch(dt, pull, swingDamping);
+      }
+    }
+  }
+
+  /** Original winch mode: constant pull force + rope length constraint with damping. */
+  private updateGrappleWinch(dt: number, pull: number, swingDamping: number): void {
+    const toAnchor = this._tv5.subVectors(this.grappleAnchor, this.position);
+    const dist = toAnchor.length();
+    if (dist < 0.01) return;
+    toAnchor.divideScalar(dist);
+    this.velocity.addScaledVector(toAnchor, pull * dt);
+    if (dist > this.grappleRopeLength) {
+      const radialSpeed = this.velocity.dot(toAnchor);
+      if (radialSpeed < 0) {
+        this.velocity.addScaledVector(toAnchor, -radialSpeed * swingDamping);
+      }
+      this.position.addScaledVector(toAnchor, (dist - this.grappleRopeLength) * 0.5);
+    }
+  }
+
+  /** Pendulum mode: shortening rope, full tangential momentum preservation, auto-detach. */
+  private updateGrapplePendulum(dt: number): void {
+    const toAnchor = this._tv5.subVectors(this.grappleAnchor, this.position);
+    const dist = toAnchor.length();
+    if (dist < 0.01) return;
+    const toAnchorDir = this._tv6.copy(toAnchor).divideScalar(dist);
+
+    // Auto-detach when close to anchor
+    if (dist <= tuning.grappleAutoDetachRadius) {
+      this.grappleAttached = false;
+      return;
+    }
+
+    // Track if player has been airborne during this grapple
+    if (!this.grounded) this.grappleWasAirborne = true;
+
+    // Ground-cancel: only after player has been airborne and lands again
+    if (this.grounded && this.grappleWasAirborne) {
+      this.grappleAttached = false;
+      return;
+    }
+
+    // Context-sensitive reel-in: fast when moving toward anchor, pauses when swinging away
+    const radialVel = this.velocity.dot(toAnchorDir);
+    const reelFactor = radialVel > 0 ? 1.5 : 0.3;
+    this.grappleRopeLength = Math.max(
+      tuning.grappleAutoDetachRadius,
+      this.grappleRopeLength - tuning.grappleReelSpeed * reelFactor * dt,
+    );
+
+    // Rope length constraint: if beyond rope length, strip outward radial velocity
+    // and snap position back — preserving ALL tangential momentum (no damping).
+    if (dist > this.grappleRopeLength) {
+      if (radialVel < 0) {
+        this.velocity.addScaledVector(toAnchorDir, -radialVel);
+      }
+      this.position.copy(this.grappleAnchor).addScaledVector(toAnchorDir, -this.grappleRopeLength);
+    }
+
+    // Look-direction steering: bias tangential velocity toward where the player is looking
+    const camFwd = this._tv7.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const fwdDotRope = camFwd.dot(toAnchorDir);
+    camFwd.addScaledVector(toAnchorDir, -fwdDotRope);
+    if (camFwd.lengthSq() > 0.001) {
+      camFwd.normalize();
+      this.velocity.addScaledVector(camFwd, 8 * dt);
+    }
+  }
+
   private computeFlippedQuat(targetUp: THREE.Vector3): THREE.Quaternion {
-    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-    const rightVec = new THREE.Vector3().crossVectors(camForward, targetUp).normalize();
+    const camForward = this._tv5.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const rightVec = this._tv6.crossVectors(camForward, targetUp).normalize();
     if (rightVec.lengthSq() < 0.001) {
       rightVec.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
       rightVec.y = 0;
       rightVec.normalize();
     }
-    const correctedUp = new THREE.Vector3().crossVectors(rightVec, camForward).normalize();
-    const m = new THREE.Matrix4().makeBasis(rightVec, correctedUp, camForward.negate());
-    return new THREE.Quaternion().setFromRotationMatrix(m);
+    const correctedUp = this._tv7.crossVectors(rightVec, camForward).normalize();
+    this._tm0.makeBasis(rightVec, correctedUp, camForward.negate());
+    return this._tq1.setFromRotationMatrix(this._tm0);
   }
 
   private applyGravityCamera(dt: number): void {
@@ -705,23 +852,16 @@ export class PlayerController {
 
     const speed = tuning.gravityRotSpeed;
 
-    // ── Hard target up (binary, used by smooth/snap/spring) ──
-    const hardTargetUp = new THREE.Vector3(0, this.gravitySign > 0 ? 1 : -1, 0);
+    const hardTargetUp = this._tv3.set(0, this.gravitySign > 0 ? 1 : -1, 0);
+    const blendedUp = this._tv4.set(0, -this.gravityBlend, 0);
+    const blendedLen = Math.abs(this.gravityBlend);
 
-    // ── Blended target up (smooth through transition zone) ──
-    // gravityBlend goes from -1 (floor) to +1 (ceiling).
-    // Map to a Y value: -1 → up=(0,1,0), +1 → up=(0,-1,0), near 0 → near-zero length.
-    const blendedUp = new THREE.Vector3(0, -this.gravityBlend, 0);
-    const blendedLen = blendedUp.length();
-
-    // ── Velocity gate factor: 0 = full freefall (no correction), 1 = grounded/slow (full correction) ──
     const velGateThreshold = tuning.gravCamVelGate;
     const verticalSpeed = Math.abs(this.velocity.y);
     const velGateFactor = this.grounded
       ? 1.0
       : Math.max(0, 1.0 - verticalSpeed / Math.max(velGateThreshold, 0.01));
 
-    // ── Dead zone factor: 0 near midpoint, 1 when clearly in one gravity regime ──
     const deadZone = tuning.gravCamDeadZone;
     const midpoint = this.mirrorY / 2;
     const distFromMid = Math.abs(this.position.y - midpoint);
@@ -752,25 +892,20 @@ export class PlayerController {
     } else if (mode === "spring") {
       this.applySpringRoll(dt, hardTargetUp, speed);
     } else if (mode === "blend") {
-      // Spring toward blended target up. Near the midpoint the target has
-      // near-zero length so the spring naturally eases off → free tumble zone.
       if (blendedLen > 0.05) {
-        const target = blendedUp.clone().divideScalar(blendedLen);
+        const target = this._tv4.divideScalar(blendedLen);
         this.applySpringRoll(dt, target, speed * blendedLen);
       }
     } else if (mode === "velocity") {
-      // Spring toward hard target up, but only when grounded or low vertical speed.
       if (velGateFactor > 0.01) {
         this.applySpringRoll(dt, hardTargetUp, speed * velGateFactor);
       }
     } else if (mode === "damping") {
-      // No target seeking — just damp the camera's roll angular velocity.
       this.applyRollDamping(dt);
     } else if (mode === "blend+vel") {
-      // Blended target up + velocity gating + dead zone.
       const effectiveStrength = blendedLen * velGateFactor * deadZoneFactor;
       if (blendedLen > 0.05 && effectiveStrength > 0.01) {
-        const target = blendedUp.clone().divideScalar(blendedLen);
+        const target = this._tv4.divideScalar(blendedLen);
         this.applySpringRoll(dt, target, speed * effectiveStrength);
       }
     }
@@ -779,89 +914,91 @@ export class PlayerController {
     this.prevGrounded = this.grounded;
   }
 
-  /** Apply a spring-like roll correction toward a target up vector. */
   private applySpringRoll(dt: number, targetUp: THREE.Vector3, strength: number): void {
-    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const camUp = this._tv5.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const camForward = this._tv6.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
 
-    // Project both up vectors onto the plane perpendicular to the look direction
-    const currentUpProj = camUp.clone().addScaledVector(camForward, -camUp.dot(camForward));
+    const currentUpProj = this._tv7.copy(camUp).addScaledVector(camForward, -camUp.dot(camForward));
     if (currentUpProj.lengthSq() < 0.0001) return;
     currentUpProj.normalize();
 
-    const targetUpProj = targetUp.clone().addScaledVector(camForward, -targetUp.dot(camForward));
+    // Reuse _tv5 (camUp done)
+    const targetUpProj = this._tv5.copy(targetUp).addScaledVector(camForward, -targetUp.dot(camForward));
     if (targetUpProj.lengthSq() < 0.001) return;
     targetUpProj.normalize();
 
     const dot = Math.max(-1, Math.min(1, currentUpProj.dot(targetUpProj)));
-    const cross = new THREE.Vector3().crossVectors(currentUpProj, targetUpProj);
+    const cross = this._upDir.crossVectors(currentUpProj, targetUpProj);
     const angleSigned = Math.atan2(cross.dot(camForward), dot);
 
     const correction = angleSigned * Math.min(1, strength * dt);
     if (Math.abs(correction) > 0.0001) {
-      const rollQuat = new THREE.Quaternion().setFromAxisAngle(camForward, correction);
-      this.camera.quaternion.premultiply(rollQuat);
+      this._tq0.setFromAxisAngle(camForward, correction);
+      this.camera.quaternion.premultiply(this._tq0);
       this.camera.quaternion.normalize();
     }
   }
 
-  /** Damp the camera's roll rate without seeking a specific target. */
   private applyRollDamping(dt: number): void {
     const dampStr = tuning.gravCamDamping;
-    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const camUp = this._tv5.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const camForward = this._tv6.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
 
-    // Use the closest world axis as a very weak reference to prevent drift
-    const worldUp = new THREE.Vector3(0, this.gravitySign > 0 ? 1 : -1, 0);
+    const worldUp = this._tv7.set(0, this.gravitySign > 0 ? 1 : -1, 0);
 
-    const currentUpProj = camUp.clone().addScaledVector(camForward, -camUp.dot(camForward));
+    const currentUpProj = this._tv5.copy(camUp).addScaledVector(camForward, -camUp.dot(camForward));
     if (currentUpProj.lengthSq() < 0.0001) return;
     currentUpProj.normalize();
 
-    const targetUpProj = worldUp.clone().addScaledVector(camForward, -worldUp.dot(camForward));
+    // Reuse _tv7 (worldUp value captured above, now project it)
+    const targetUpProj = this._tv7.addScaledVector(camForward, -this._tv7.dot(camForward));
     if (targetUpProj.lengthSq() < 0.001) return;
     targetUpProj.normalize();
 
     const dot = Math.max(-1, Math.min(1, currentUpProj.dot(targetUpProj)));
-    const cross = new THREE.Vector3().crossVectors(currentUpProj, targetUpProj);
+    const cross = this._upDir.crossVectors(currentUpProj, targetUpProj);
     const angleSigned = Math.atan2(cross.dot(camForward), dot);
 
-    // Damping: small fraction of the error, feels like drag rather than a spring
     const correction = angleSigned * (1.0 - Math.exp(-dampStr * 0.3 * dt));
     if (Math.abs(correction) > 0.0001) {
-      const rollQuat = new THREE.Quaternion().setFromAxisAngle(camForward, correction);
-      this.camera.quaternion.premultiply(rollQuat);
+      this._tq0.setFromAxisAngle(camForward, correction);
+      this.camera.quaternion.premultiply(this._tq0);
       this.camera.quaternion.normalize();
     }
   }
+
+  // Pre-allocated for sampleSurfaceFlat return values
+  private readonly _flatDir = new THREE.Vector3();
+  private readonly _flatHitNormal = new THREE.Vector3();
+  private readonly _flatFallbackNormal = new THREE.Vector3();
+  private readonly _flatHitResult = { height: 0, normal: this._flatHitNormal };
+  private readonly _flatFallback = { height: 0, normal: this._flatFallbackNormal };
 
   private sampleSurfaceFlat(
     x: number, z: number, which: "floor" | "ceiling",
   ): { height: number; normal: THREE.Vector3 } {
     const meshes = which === "floor" ? this.floorMeshes : this.ceilingMeshes;
-    const dir = which === "floor"
-      ? new THREE.Vector3(0, -1, 0)
-      : new THREE.Vector3(0, 1, 0);
-    const originY = which === "floor"
+    const isFloor = which === "floor";
+    this._flatDir.set(0, isFloor ? -1 : 1, 0);
+    const originY = isFloor
       ? this.position.y + RAY_ORIGIN_OFFSET
       : this.position.y - RAY_ORIGIN_OFFSET;
 
-    const fallbackNormal = which === "floor"
-      ? new THREE.Vector3(0, 1, 0)
-      : new THREE.Vector3(0, -1, 0);
-    const fallback = { height: which === "floor" ? 0 : this.mirrorY, normal: fallbackNormal };
+    this._flatFallbackNormal.set(0, isFloor ? 1 : -1, 0);
+    this._flatFallback.height = isFloor ? 0 : this.mirrorY;
 
-    if (meshes.length === 0) return fallback;
+    if (meshes.length === 0) return this._flatFallback;
 
     this.rayOrigin.set(x, originY, z);
-    this.raycaster.set(this.rayOrigin, dir);
+    this.raycaster.set(this.rayOrigin, this._flatDir);
 
     const hits = this.raycaster.intersectObjects(meshes, false);
     if (hits.length > 0) {
       const hit = hits[0];
-      const normal = hit.face ? hit.face.normal.clone() : fallbackNormal;
-      return { height: hit.point.y, normal };
+      this._flatHitNormal.copy(hit.face ? hit.face.normal : this._flatFallbackNormal);
+      this._flatHitResult.height = hit.point.y;
+      return this._flatHitResult;
     }
-    return fallback;
+    return this._flatFallback;
   }
 }

@@ -1,5 +1,5 @@
-import type { GameTuning, GravityCameraMode, MapType } from "./constants";
-import { tuning, tuningDefaults, resetTuning, saveTuning } from "./constants";
+import type { GameTuning, MapType } from "./constants";
+import { tuning, tuningDefaults, resetTuning, saveTuning, saveAsDefaults } from "./constants";
 import type { PlayerController } from "./player";
 
 const mapChangeListeners: Array<(mapType: MapType) => void> = [];
@@ -24,10 +24,17 @@ type ToggleDef = {
   label: string;
 };
 
+type DropdownDef = {
+  key: keyof GameTuning;
+  label: string;
+  options: { value: string; label: string }[];
+};
+
 type Section = {
   id: string;
   title: string;
   open?: boolean;
+  dropdowns?: DropdownDef[];
   toggles?: ToggleDef[];
   sliders: SliderDef[];
 };
@@ -47,6 +54,22 @@ function saveSectionState(id: string, open: boolean): void {
   state[id] = open;
   localStorage.setItem(SECTION_STATE_KEY, JSON.stringify(state));
 }
+
+const CAMERA_MODES: { value: string; label: string }[] = [
+  { value: "none", label: "None (manual)" },
+  { value: "smooth", label: "Smooth slerp (on flip)" },
+  { value: "snap", label: "Snap on land" },
+  { value: "spring", label: "Continuous spring" },
+  { value: "blend", label: "Blended target up" },
+  { value: "velocity", label: "Velocity-gated spring" },
+  { value: "damping", label: "Roll damping" },
+  { value: "blend+vel", label: "Blend + velocity + dead zone" },
+];
+
+const GRAPPLE_MODES: { value: string; label: string }[] = [
+  { value: "winch", label: "Winch (constant pull)" },
+  { value: "pendulum", label: "Pendulum (Titanfall)" },
+];
 
 const SECTIONS: Section[] = [
   {
@@ -69,6 +92,9 @@ const SECTIONS: Section[] = [
     id: "gravcam",
     title: "Gravity Camera",
     open: false,
+    dropdowns: [
+      { key: "gravityCamera", label: "Mode", options: CAMERA_MODES },
+    ],
     sliders: [
       { key: "gravityRotSpeed", label: "Spring strength", min: 0.5, max: 10.0, step: 0.1 },
       { key: "gravCamDeadZone", label: "Dead zone (m)", min: 0, max: 50, step: 1 },
@@ -91,10 +117,29 @@ const SECTIONS: Section[] = [
     id: "grapple",
     title: "Grapple",
     open: false,
+    dropdowns: [
+      { key: "grappleMode", label: "Mode", options: GRAPPLE_MODES },
+    ],
     sliders: [
       { key: "grappleRange", label: "Range", min: 50, max: 500, step: 10 },
-      { key: "grapplePull", label: "Pull strength", min: 10, max: 150, step: 5 },
-      { key: "grappleSwingDamping", label: "Swing damping", min: 0.8, max: 1, step: 0.01 },
+      { key: "grappleSpeed", label: "Hook speed", min: 50, max: 600, step: 10 },
+      { key: "grapplePull", label: "Pull (winch)", min: 10, max: 150, step: 5 },
+      { key: "grappleSwingDamping", label: "Swing damp (winch)", min: 0.8, max: 1, step: 0.01 },
+      { key: "grappleReelSpeed", label: "Reel speed", min: 5, max: 120, step: 5 },
+      { key: "grappleConnectBoost", label: "Connect boost", min: 0, max: 50, step: 1 },
+      { key: "grappleConnectUpBias", label: "Connect up bias", min: 0, max: 30, step: 1 },
+      { key: "grappleAutoDetachRadius", label: "Auto-detach dist", min: 1, max: 20, step: 1 },
+    ],
+  },
+  {
+    id: "impact",
+    title: "Impact Feel",
+    open: false,
+    sliders: [
+      { key: "impactThreshold", label: "Threshold", min: 2, max: 30, step: 1 },
+      { key: "impactShakeIntensity", label: "Shake", min: 0, max: 3, step: 0.1 },
+      { key: "impactFovPunch", label: "FOV punch", min: 0, max: 3, step: 0.1 },
+      { key: "impactVignette", label: "Vignette", min: 0, max: 3, step: 0.1 },
     ],
   },
   {
@@ -109,33 +154,43 @@ const SECTIONS: Section[] = [
       { key: "enableFovScaling", label: "Speed FOV" },
       { key: "enableJetParticles", label: "Jet particles" },
       { key: "enableSkiParticles", label: "Ski dust" },
+      { key: "enableMarkers", label: "Terrain markers" },
+      { key: "enableCeiling", label: "Ceiling (flat)" },
     ],
     sliders: [
       { key: "toneMappingExposure", label: "Exposure", min: 0.3, max: 2.5, step: 0.05 },
       { key: "hemisphereLightIntensity", label: "Hemi intensity", min: 0.1, max: 1.5, step: 0.05 },
       { key: "fovScaleAmount", label: "FOV scale", min: 0.05, max: 0.4, step: 0.01 },
-      { key: "fogNear", label: "Fog near", min: 20, max: 300, step: 5 },
-      { key: "fogFar", label: "Fog far", min: 100, max: 800, step: 10 },
+      { key: "fogNear", label: "Fog near", min: 20, max: 1000, step: 10 },
+      { key: "fogFar", label: "Fog far", min: 100, max: 3000, step: 25 },
+      { key: "cameraFar", label: "Render dist", min: 500, max: 4000, step: 50 },
     ],
   },
 ];
 
-const CAMERA_MODES: { value: GravityCameraMode; label: string }[] = [
-  { value: "none", label: "None (manual)" },
-  { value: "smooth", label: "Smooth slerp (on flip)" },
-  { value: "snap", label: "Snap on land" },
-  { value: "spring", label: "Continuous spring" },
-  { value: "blend", label: "Blended target up" },
-  { value: "velocity", label: "Velocity-gated spring" },
-  { value: "damping", label: "Roll damping" },
-  { value: "blend+vel", label: "Blend + velocity + dead zone" },
-];
+// --- FPS counter ---
+let fpsEl: HTMLElement | null = null;
+let fpsFrames = 0;
+let fpsLastTime = performance.now();
+
+export function updateFPS(): void {
+  if (!fpsEl) return;
+  fpsFrames++;
+  const now = performance.now();
+  const elapsed = now - fpsLastTime;
+  if (elapsed >= 500) {
+    const fps = Math.round((fpsFrames * 1000) / elapsed);
+    fpsEl.textContent = `${fps} fps`;
+    fpsFrames = 0;
+    fpsLastTime = now;
+  }
+}
 
 const PANEL_VISIBLE_KEY = "retribes_panelVisible";
 let panelVisible = (() => {
   try {
     const v = localStorage.getItem(PANEL_VISIBLE_KEY);
-    return v === null ? true : v === "1";
+    return v === null ? false : v === "1";
   } catch {
     return true;
   }
@@ -150,10 +205,17 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   const root = document.createElement("div");
   root.id = "tune-panel";
   root.innerHTML = `
-    <div class="tune-panel__header">Game feel</div>
+    <div class="tune-panel__top-bar">
+      <div class="tune-panel__header">Game feel</div>
+      <div class="tune-panel__fps" id="tune-fps"></div>
+    </div>
     <div class="tune-panel__rows" id="tune-rows"></div>
-    <button type="button" class="tune-panel__reset" id="tune-reset">Reset defaults</button>
+    <div class="tune-panel__buttons">
+      <button type="button" class="tune-panel__reset" id="tune-reset">Reset defaults</button>
+      <button type="button" class="tune-panel__reset tune-panel__save" id="tune-save-defaults">Save as defaults</button>
+    </div>
   `;
+  fpsEl = root.querySelector("#tune-fps")!;
 
   const style = document.createElement("style");
   style.textContent = `
@@ -175,12 +237,23 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       box-sizing: border-box;
       overflow: hidden;
     }
+    .tune-panel__top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 10px;
+      flex-shrink: 0;
+    }
     .tune-panel__header {
       font-weight: 600;
       font-size: 13px;
       letter-spacing: 0.02em;
-      margin-bottom: 10px;
-      flex-shrink: 0;
+    }
+    .tune-panel__fps {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: #8ab4f8;
+      opacity: 0.85;
     }
     .tune-panel__rows {
       flex: 1;
@@ -295,8 +368,13 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     .tune-toggle input[type="checkbox"]:checked::after {
       left: 16px;
     }
-    .tune-panel__reset {
+    .tune-panel__buttons {
       flex-shrink: 0;
+      display: flex;
+      gap: 8px;
+    }
+    .tune-panel__reset {
+      flex: 1;
       padding: 8px 12px;
       background: rgba(255,255,255,0.08);
       border: 1px solid rgba(255,255,255,0.15);
@@ -351,35 +429,8 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   mapRow.appendChild(mapSelect);
   rowsEl.appendChild(mapRow);
 
-  // --- Gravity camera mode dropdown (top-level, outside sections) ---
-  const camRow = document.createElement("div");
-  camRow.className = "tune-row";
-  camRow.style.marginBottom = "12px";
-  const camLabel = document.createElement("label");
-  const camName = document.createElement("span");
-  camName.className = "tune-name";
-  camName.textContent = "Gravity camera";
-  camLabel.appendChild(camName);
-
-  const camSelect = document.createElement("select");
-  for (const mode of CAMERA_MODES) {
-    const opt = document.createElement("option");
-    opt.value = mode.value;
-    opt.textContent = mode.label;
-    camSelect.appendChild(opt);
-  }
-  camSelect.value = tuning.gravityCamera;
-
-  camSelect.addEventListener("change", () => {
-    tuning.gravityCamera = camSelect.value as GravityCameraMode;
-    saveTuning();
-  });
-
-  camRow.appendChild(camLabel);
-  camRow.appendChild(camSelect);
-  rowsEl.appendChild(camRow);
-
   // --- Collapsible sections ---
+  const allDropdownInputs: { key: keyof GameTuning; select: HTMLSelectElement }[] = [];
   function buildSliderRow(def: SliderDef, container: HTMLElement): void {
     const row = document.createElement("div");
     row.className = "tune-row";
@@ -464,6 +515,35 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     const body = document.createElement("div");
     body.className = "tune-section__body";
 
+    if (section.dropdowns) {
+      for (const dd of section.dropdowns) {
+        const row = document.createElement("div");
+        row.className = "tune-row";
+        const label = document.createElement("label");
+        const name = document.createElement("span");
+        name.className = "tune-name";
+        name.textContent = dd.label;
+        label.appendChild(name);
+
+        const sel = document.createElement("select");
+        for (const o of dd.options) {
+          const opt = document.createElement("option");
+          opt.value = o.value;
+          opt.textContent = o.label;
+          sel.appendChild(opt);
+        }
+        sel.value = tuning[dd.key] as string;
+        sel.addEventListener("change", () => {
+          (tuning as unknown as Record<string, string>)[dd.key] = sel.value;
+          saveTuning();
+        });
+
+        row.appendChild(label);
+        row.appendChild(sel);
+        body.appendChild(row);
+        allDropdownInputs.push({ key: dd.key, select: sel });
+      }
+    }
     if (section.toggles) {
       for (const def of section.toggles) {
         buildToggleRow(def, body);
@@ -477,14 +557,10 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     rowsEl.appendChild(details);
   }
 
-  // --- Reset ---
-  root.querySelector("#tune-reset")!.addEventListener("click", () => {
-    const prevMap = tuning.mapType;
-    resetTuning();
+  function syncUIFromTuning(): void {
     mapSelect.value = tuning.mapType;
-    camSelect.value = tuning.gravityCamera;
-    if (tuning.mapType !== prevMap) {
-      for (const fn of mapChangeListeners) fn(tuning.mapType);
+    for (const { key, select } of allDropdownInputs) {
+      select.value = tuning[key] as string;
     }
     for (const { def, input } of allSliderInputs) {
       const v = tuning[def.key] as number;
@@ -496,7 +572,22 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     for (const { def, input } of allToggleInputs) {
       input.checked = tuning[def.key] as boolean;
     }
+  }
+
+  // --- Reset ---
+  root.querySelector("#tune-reset")!.addEventListener("click", () => {
+    const prevMap = tuning.mapType;
+    resetTuning();
+    syncUIFromTuning();
+    if (tuning.mapType !== prevMap) {
+      for (const fn of mapChangeListeners) fn(tuning.mapType);
+    }
     player.snapToGround();
+  });
+
+  // --- Save as defaults ---
+  root.querySelector("#tune-save-defaults")!.addEventListener("click", () => {
+    saveAsDefaults();
   });
 
   // Apply initial visibility from localStorage
