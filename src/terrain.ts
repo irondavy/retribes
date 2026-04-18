@@ -802,11 +802,18 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
   const mapHalf = FLAT_TERRAIN_SIZE / 2 * 0.8;
   const minRadius = 60;
 
-  const structMat = new THREE.MeshStandardMaterial({
-    color: 0x6b6e72, roughness: 0.62, metalness: 0.45,
+  // Bright alien Forerunner palette — saturated but cohesive
+  const platformMat = new THREE.MeshStandardMaterial({
+    color: 0x20b0d0, roughness: 0.35, metalness: 0.6,
+    emissive: 0x0890b0, emissiveIntensity: 0.2,
   });
-  const darkMat = new THREE.MeshStandardMaterial({
-    color: 0x45484c, roughness: 0.68, metalness: 0.4,
+  const ringMat = new THREE.MeshStandardMaterial({
+    color: 0xd060e0, roughness: 0.3, metalness: 0.55,
+    emissive: 0x9030a0, emissiveIntensity: 0.3,
+  });
+  const columnMat = new THREE.MeshStandardMaterial({
+    color: 0x30d898, roughness: 0.38, metalness: 0.5,
+    emissive: 0x10a868, emissiveIntensity: 0.2,
   });
 
   interface StructDef {
@@ -829,24 +836,28 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
     const seed = hash2(i * 53, i * 67);
     const seed2 = hash2(i * 83, i * 97);
 
-    let type: "platform" | "ring" | "column";
-    if (seed < 0.4) type = "platform";
-    else if (seed < 0.7) type = "ring";
-    else type = "column";
+    // hash2 output is biased to [0,0.5) so threshold-based type selection
+    // fails for columns. Use index-based cycling instead (still shuffled by
+    // golden-angle placement so it doesn't look regular).
+    const types: ("platform" | "ring" | "column")[] = ["platform", "ring", "column"];
+    const type = types[i % 3];
 
     structs.push({ x, y, z, type, seed, seed2 });
   }
+
+  const _instColor = new THREE.Color();
 
   // Platforms — landing surfaces, seed² curve so most are medium but a few are huge
   const platformGeo = new THREE.BoxGeometry(1, 1, 1);
   const platforms = structs.filter(s => s.type === "platform");
   if (platforms.length > 0) {
-    const im = new THREE.InstancedMesh(platformGeo, structMat, platforms.length);
+    const im = new THREE.InstancedMesh(platformGeo, platformMat, platforms.length);
     const _m = new THREE.Matrix4();
     const _p = new THREE.Vector3();
     const _q = new THREE.Quaternion();
     const _s = new THREE.Vector3();
     const _e = new THREE.Euler();
+    const baseColors = [0x20b0d0, 0x18c8e0, 0x40d0a8, 0x28b8f0];
     for (let i = 0; i < platforms.length; i++) {
       const s = platforms[i];
       const t1 = s.seed * s.seed;   // power curve: most small, few massive
@@ -860,9 +871,13 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
       _s.set(w, h, d);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(i, _m);
+      _instColor.set(baseColors[i % baseColors.length]);
+      _instColor.offsetHSL(0, (s.seed2 - 0.5) * 0.08, (s.seed - 0.5) * 0.06);
+      im.setColorAt(i, _instColor);
       bounds.push({ x: s.x, y: s.y, z: s.z, radius: Math.max(w, d) * 0.5 + h * 0.5 });
     }
     im.instanceMatrix.needsUpdate = true;
+    im.instanceColor!.needsUpdate = true;
     im.receiveShadow = true;
     im.castShadow = true;
     structGroup.add(im);
@@ -872,12 +887,13 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
   const ringGeo = new THREE.TorusGeometry(1, 0.15, 8, 24);
   const rings = structs.filter(s => s.type === "ring");
   if (rings.length > 0) {
-    const im = new THREE.InstancedMesh(ringGeo, darkMat, rings.length);
+    const im = new THREE.InstancedMesh(ringGeo, ringMat, rings.length);
     const _m = new THREE.Matrix4();
     const _p = new THREE.Vector3();
     const _q = new THREE.Quaternion();
     const _s = new THREE.Vector3();
     const _e = new THREE.Euler();
+    const ringColors = [0xd060e0, 0xe048c8, 0xb070f0, 0xf050a0];
     for (let i = 0; i < rings.length; i++) {
       const s = rings[i];
       const t = s.seed * s.seed;
@@ -892,9 +908,13 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
       _s.setScalar(scale);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(i, _m);
+      _instColor.set(ringColors[i % ringColors.length]);
+      _instColor.offsetHSL(0, (s.seed - 0.5) * 0.1, (s.seed2 - 0.5) * 0.08);
+      im.setColorAt(i, _instColor);
       bounds.push({ x: s.x, y: s.y, z: s.z, radius: scale * 1.15 });
     }
     im.instanceMatrix.needsUpdate = true;
+    im.instanceColor!.needsUpdate = true;
     im.castShadow = true;
     structGroup.add(im);
   }
@@ -903,25 +923,30 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
   const colGeo = new THREE.CylinderGeometry(1, 1, 1, 10);
   const columns = structs.filter(s => s.type === "column");
   if (columns.length > 0) {
-    const im = new THREE.InstancedMesh(colGeo, structMat, columns.length);
+    const im = new THREE.InstancedMesh(colGeo, columnMat, columns.length);
     const _m = new THREE.Matrix4();
     const _p = new THREE.Vector3();
     const _q = new THREE.Quaternion();
     const _s = new THREE.Vector3();
+    const colColors = [0x30d898, 0x20e8a0, 0x48f0b8, 0x38c880];
     for (let i = 0; i < columns.length; i++) {
       const s = columns[i];
       const t1 = s.seed * s.seed;
       const t2 = s.seed2 * s.seed2;
       const height = 30 + t1 * 220;  // 30–250m
-      const radius = 2 + t2 * 23;    // 2–25m
+      const radius = 8 + t2 * 30;    // 8–38m — wide enough to see and land on
       _p.set(s.x, s.y, s.z);
       _q.identity();
       _s.set(radius, height, radius);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(i, _m);
+      _instColor.set(colColors[i % colColors.length]);
+      _instColor.offsetHSL(0, (s.seed - 0.5) * 0.08, (s.seed2 - 0.5) * 0.06);
+      im.setColorAt(i, _instColor);
       bounds.push({ x: s.x, y: s.y, z: s.z, radius: Math.max(radius, height * 0.5) + radius });
     }
     im.instanceMatrix.needsUpdate = true;
+    im.instanceColor!.needsUpdate = true;
     im.castShadow = true;
     structGroup.add(im);
   }

@@ -48,6 +48,22 @@ const HUD_HTML = `
     </div>
   </div>
 
+  <!-- Landing angle boost / penalty (below crosshair) -->
+  <div id="hud-landing-angle" style="
+    position:absolute; top:calc(50% + 40px); left:50%; transform:translateX(-50%);
+    font-size:15px; font-weight:700; letter-spacing:0.04em;
+    text-shadow:0 1px 8px rgba(0,0,0,0.9);
+    opacity:0; pointer-events:none; white-space:nowrap;
+  "></div>
+
+  <!-- Impact (into-surface speed) -->
+  <div id="hud-impact" style="
+    position:absolute; top:calc(50% + 64px); left:50%; transform:translateX(-50%);
+    font-size:13px; font-weight:700; letter-spacing:0.03em;
+    text-shadow:0 1px 8px rgba(0,0,0,0.9);
+    opacity:0; pointer-events:none; white-space:nowrap;
+  "></div>
+
   <!-- Top-center state indicators -->
   <div style="position:absolute; top:32px; left:50%; transform:translateX(-50%); display:flex; gap:12px;">
     <div id="hud-ski-badge" class="hud-badge">ski</div>
@@ -86,6 +102,8 @@ let grappleBadge: HTMLElement;
 let playersEl: HTMLElement;
 let vignetteEl: HTMLElement;
 let speedLinesEl: HTMLElement;
+let landingAngleEl: HTMLElement;
+let impactEl: HTMLElement;
 
 let lastSpeed = -1;
 let lastAlt = -1;
@@ -94,6 +112,8 @@ let lastEnergyColor = "";
 let lastPlayerCount = -1;
 let lastVignetteOp = "";
 let lastSpeedLinesOp = "";
+let lastLandingAngleLine = "";
+let lastImpactLine = "";
 
 export function initHUD(initialPanelVisible: boolean): void {
   const badgeStyle = document.createElement("style");
@@ -129,6 +149,8 @@ export function initHUD(initialPanelVisible: boolean): void {
   playersEl = document.getElementById("hud-players")!;
   vignetteEl = document.getElementById("hud-vignette")!;
   speedLinesEl = document.getElementById("hud-speed-lines")!;
+  landingAngleEl = document.getElementById("hud-landing-angle")!;
+  impactEl = document.getElementById("hud-impact")!;
 }
 
 export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash = 0): void {
@@ -190,5 +212,52 @@ export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash
   if (slOp !== lastSpeedLinesOp) {
     speedLinesEl.style.opacity = slOp;
     lastSpeedLinesOp = slOp;
+  }
+
+  if (
+    tuning.showLandingAngleHud &&
+    tuning.enableLandingAngle &&
+    player.landingAngleHudTimer > 0
+  ) {
+    const t = player.landingAngleHudTimer;
+    const opacity = t > 0.45 ? 1 : t / 0.45;
+    const sign = player.landingAngleHudBoost ? "+" : "";
+    const line = `${sign}${player.landingAngleHudPct}%`;
+    if (line !== lastLandingAngleLine) {
+      landingAngleEl.textContent = line;
+      landingAngleEl.style.color = player.landingAngleHudBoost ? "#7dffc8" : "#ff9e8a";
+      lastLandingAngleLine = line;
+    }
+    landingAngleEl.style.opacity = String(opacity);
+  } else if (lastLandingAngleLine !== "") {
+    landingAngleEl.style.opacity = "0";
+    landingAngleEl.textContent = "";
+    lastLandingAngleLine = "";
+  }
+
+  if (tuning.showImpactHud && player.impactHudTimer > 0) {
+    const t = player.impactHudTimer;
+    const opacity = t > 0.45 ? 1 : t / 0.45;
+    const sp =
+      player.impactHudSpeed >= 10
+        ? `${Math.round(player.impactHudSpeed)}`
+        : `${Math.round(player.impactHudSpeed * 10) / 10}`;
+    let line = `${sp} m/s`;
+    if (player.impactHudHard) {
+      line += ` +${player.impactHudOverPct}%`;
+      if (player.impactHudFxPct > 0) {
+        line += `  fx ${player.impactHudFxPct}%`;
+      }
+    }
+    if (line !== lastImpactLine) {
+      impactEl.textContent = line;
+      impactEl.style.color = player.impactHudHard ? "#ffb28a" : "#9ec8e0";
+      lastImpactLine = line;
+    }
+    impactEl.style.opacity = String(opacity);
+  } else if (lastImpactLine !== "") {
+    impactEl.style.opacity = "0";
+    impactEl.textContent = "";
+    lastImpactLine = "";
   }
 }

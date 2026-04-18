@@ -231,10 +231,14 @@ function gameLoop(now: number): void {
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
 
+  if (document.pointerLockElement) {
+    player.update(dt, input);
+  }
+
+  // After physics so landing `justLanded` / `lastImpact` match this frame (FX read the real contact).
   visuals.update(dt, player);
 
   if (document.pointerLockElement) {
-    player.update(dt, input);
     updateHUD(player, remotePlayers.playerCount, visuals.impactFlash);
   }
 

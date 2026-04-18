@@ -16,6 +16,8 @@ export function onMapChange(fn: (mapType: MapType) => void): void {
 
 export const TUNE_PANEL_WIDTH = 280;
 
+type EnabledWhen = (t: GameTuning) => boolean;
+
 type SliderDef = {
   key: keyof GameTuning;
   label: string;
@@ -23,11 +25,14 @@ type SliderDef = {
   max: number;
   step: number;
   format?: (v: number) => string;
+  /** When false, control is shown but disabled (e.g. master toggle off). */
+  enabledWhen?: EnabledWhen;
 };
 
 type ToggleDef = {
   key: keyof GameTuning;
   label: string;
+  enabledWhen?: EnabledWhen;
 };
 
 type DropdownDef = {
@@ -35,6 +40,14 @@ type DropdownDef = {
   label: string;
   options: { value: string; label: string }[];
   hints?: Record<string, string>;
+  enabledWhen?: EnabledWhen;
+};
+
+type TuneSubgroup = {
+  title: string;
+  dropdowns?: DropdownDef[];
+  toggles?: ToggleDef[];
+  sliders?: SliderDef[];
 };
 
 type Section = {
@@ -43,7 +56,8 @@ type Section = {
   open?: boolean;
   dropdowns?: DropdownDef[];
   toggles?: ToggleDef[];
-  sliders: SliderDef[];
+  sliders?: SliderDef[];
+  subgroups?: TuneSubgroup[];
 };
 
 const TIPS: Partial<Record<keyof GameTuning, string>> = {
@@ -88,15 +102,18 @@ const TIPS: Partial<Record<keyof GameTuning, string>> = {
   grappleCameraPull: "How much the camera tilts toward the grapple anchor point.",
   impactThreshold: "Minimum collision speed (m/s) to trigger impact effects.",
   impactShakeIntensity: "Camera shake strength on hard impacts.",
-  impactFovPunch: "Momentary FOV widening on hard impacts.",
+  impactFovPunch: "Hard landings only: brief FOV widen (into-surface speed above Impact threshold).",
   impactVignette: "Red edge flash intensity on hard impacts.",
+  showImpactHud: "Toast with into-surface speed (m/s); if above Impact threshold, +% vs threshold and fx % (shake/FOV curve).",
   enableJetKick: "Sharp initial thrust burst when first pressing jet, then settles to sustained.",
   enableSlopeFriction: "Ski friction varies with slope — less friction going downhill.",
   enableSpeedLines: "Radial streak overlay that intensifies at high speeds.",
   enableFovRateScaling: "FOV widens when accelerating, not just at high speed.",
   enableLandingAngle: "Landing aligned with a slope gives a speed boost; misaligned penalizes.",
+  showLandingAngleHud: "Brief center HUD text when a landing align boost or penalty is applied.",
+  alignCancelsRecovery: "Nailing the slope (align boost) skips landing recovery — FX still play, but you keep your speed.",
   coyoteTime: "Milliseconds after leaving ground where you can still jump.",
-  landingSquashFov: "FOV dip on landing — simulates a knee-bend squash.",
+  landingSquashFov: "Soft landings only: brief FOV narrow (compression); skipped when impact exceeds threshold.",
   skiEntryBoost: "Instant speed kick when transitioning from walk/air into skiing.",
   strafeRollAngle: "Degrees the camera tilts when strafing.",
   slopeTiltIntensity: "Camera tilts forward/back to reflect the slope you're skiing on.",
@@ -118,6 +135,7 @@ const TIPS: Partial<Record<keyof GameTuning, string>> = {
   turnInertia: "Velocity resists sudden direction changes. Higher = heavier, more committed turns.",
   airControlSpeedReduction: "Air control weakens at higher speeds. 0 = no reduction, 1 = full.",
   landingCameraDip: "Camera dip on landing proportional to impact speed.",
+  landingImpactTangentWeight: "Parallel-to-surface speed mixed into landing impact (shallow fast landings).",
   chainBonusWindow: "Seconds after a ski-land or grapple-release to chain another for a bonus.",
   chainBonusMultiplier: "Speed multiplier added per link in a chain combo.",
   enableToneMapping: "Apply cinematic tone mapping to the rendered image.",
@@ -216,60 +234,146 @@ const SECTIONS: Section[] = [
     id: "physics",
     title: "Physics",
     open: true,
-    toggles: [
-      { key: "enableMantle", label: "Edge mantling" },
-    ],
     sliders: [
       { key: "gravity", label: "Gravity", min: 5, max: 50, step: 0.5 },
       { key: "walkSpeed", label: "Walk speed", min: 4, max: 30, step: 0.5 },
       { key: "groundFriction", label: "Ground friction (walk)", min: 1.2, max: 30, step: 0.25, format: (v: number) => v.toFixed(2) },
       { key: "playerHeight", label: "Eye height", min: 1.2, max: 10, step: 0.05 },
       { key: "groundSnapThreshold", label: "Ground snap", min: 0.05, max: 1.5, step: 0.05 },
-      { key: "gravityBlendZone", label: "Gravity blend zone (m)", min: 10, max: 150, step: 5 },
       { key: "coyoteTime", label: "Coyote time (ms)", min: 0, max: 200, step: 10 },
       { key: "airControl", label: "Air control", min: 0.3, max: 9, step: 0.05, format: (v) => v.toFixed(2) },
       { key: "maxSpeed", label: "Max speed (0=off)", min: 0, max: 200, step: 5 },
       { key: "airDrag", label: "Air drag", min: 0, max: 0.5, step: 0.01, format: (v: number) => v.toFixed(2) },
       { key: "airControlSpeedReduction", label: "Air ctrl speed decay", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
       { key: "turnInertia", label: "Turn inertia", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
-      { key: "mantleReach", label: "Mantle reach", min: 1, max: 10, step: 0.5 },
-      { key: "mantleSpeed", label: "Mantle speed", min: 2, max: 20, step: 0.5 },
-      { key: "mantleMomentumPreserve", label: "Mantle momentum", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
+    ],
+    subgroups: [
+      {
+        title: "Dual gravity (flat map)",
+        sliders: [
+          {
+            key: "gravityBlendZone",
+            label: "Gravity blend zone (m)",
+            min: 10,
+            max: 150,
+            step: 5,
+            enabledWhen: (t) => t.mapType === "flat",
+          },
+        ],
+      },
+      {
+        title: "Edge mantling",
+        toggles: [{ key: "enableMantle", label: "Enable" }],
+        sliders: [
+          { key: "mantleReach", label: "Mantle reach", min: 1, max: 10, step: 0.5, enabledWhen: (t) => t.enableMantle },
+          { key: "mantleSpeed", label: "Mantle speed", min: 2, max: 20, step: 0.5, enabledWhen: (t) => t.enableMantle },
+          {
+            key: "mantleMomentumPreserve",
+            label: "Mantle momentum",
+            min: 0,
+            max: 1,
+            step: 0.05,
+            format: (v: number) => v.toFixed(2),
+            enabledWhen: (t) => t.enableMantle,
+          },
+        ],
+      },
     ],
   },
   {
     id: "skiing",
     title: "Skiing",
     open: false,
-    toggles: [
-      { key: "enableSlopeFriction", label: "Slope-relative friction" },
-      { key: "enableLandingAngle", label: "Landing angle matters" },
-      { key: "enableSkiReleaseBoost", label: "Ski release boost" },
-    ],
+    toggles: [{ key: "enableSlopeFriction", label: "Slope-relative friction" }],
     sliders: [
       { key: "skiFriction", label: "Ski friction", min: 0.0001, max: 0.02, step: 0.0001, format: (v) => v.toFixed(4) },
       { key: "skiSteerFactor", label: "Ski steering", min: 0.02, max: 0.25, step: 0.01 },
       { key: "skiEntryBoost", label: "Ski entry boost", min: 0, max: 15, step: 0.5 },
       { key: "slopeSpeedBonus", label: "Slope speed bonus", min: 0, max: 3, step: 0.1 },
       { key: "skiGroundAdherence", label: "Ground adherence", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
-      { key: "skiReleaseBoost", label: "Release tangent boost", min: 0, max: 18, step: 0.5 },
-      { key: "skiReleasePop", label: "Release pop (up)", min: 0, max: 16, step: 0.5 },
-      { key: "skiReleaseMinSpeed", label: "Release min speed", min: 0, max: 25, step: 0.5 },
-      { key: "skiReleaseCoyoteMs", label: "Release coyote (ms)", min: 0, max: 200, step: 5 },
       { key: "skiLaunchWindow", label: "Ski launch window (s)", min: 0, max: 0.5, step: 0.01, format: (v: number) => v.toFixed(2) },
-      { key: "landingAngleBoost", label: "Landing align boost", min: 0, max: 3, step: 0.1 },
-      { key: "landingAnglePenalty", label: "Landing align penalty", min: 0, max: 3, step: 0.1 },
       { key: "chainBonusWindow", label: "Chain bonus window (s)", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
       { key: "chainBonusMultiplier", label: "Chain bonus per link", min: 0, max: 0.2, step: 0.01, format: (v: number) => v.toFixed(2) },
+    ],
+    subgroups: [
+      {
+        title: "Landing angle",
+        toggles: [
+          { key: "enableLandingAngle", label: "Landing angle matters" },
+          {
+            key: "alignCancelsRecovery",
+            label: "Align boost skips recovery",
+            enabledWhen: (t) => t.enableLandingAngle,
+          },
+          {
+            key: "showLandingAngleHud",
+            label: "Landing angle HUD toast",
+            enabledWhen: (t) => t.enableLandingAngle,
+          },
+        ],
+        sliders: [
+          {
+            key: "landingAngleBoost",
+            label: "Landing align boost",
+            min: 0,
+            max: 3,
+            step: 0.1,
+            enabledWhen: (t) => t.enableLandingAngle,
+          },
+          {
+            key: "landingAnglePenalty",
+            label: "Landing align penalty",
+            min: 0,
+            max: 3,
+            step: 0.1,
+            enabledWhen: (t) => t.enableLandingAngle,
+          },
+        ],
+      },
+      {
+        title: "Ski release boost",
+        toggles: [{ key: "enableSkiReleaseBoost", label: "Enable release boost" }],
+        sliders: [
+          {
+            key: "skiReleaseBoost",
+            label: "Release tangent boost",
+            min: 0,
+            max: 18,
+            step: 0.5,
+            enabledWhen: (t) => t.enableSkiReleaseBoost,
+          },
+          {
+            key: "skiReleasePop",
+            label: "Release pop (up)",
+            min: 0,
+            max: 16,
+            step: 0.5,
+            enabledWhen: (t) => t.enableSkiReleaseBoost,
+          },
+          {
+            key: "skiReleaseMinSpeed",
+            label: "Release min speed",
+            min: 0,
+            max: 25,
+            step: 0.5,
+            enabledWhen: (t) => t.enableSkiReleaseBoost,
+          },
+          {
+            key: "skiReleaseCoyoteMs",
+            label: "Release coyote (ms)",
+            min: 0,
+            max: 200,
+            step: 5,
+            enabledWhen: (t) => t.enableSkiReleaseBoost,
+          },
+        ],
+      },
     ],
   },
   {
     id: "jetpack",
     title: "Jetpack",
     open: false,
-    toggles: [
-      { key: "enableJetKick", label: "Jet kick (sharp initial burst)" },
-    ],
     sliders: [
       { key: "jetThrust", label: "Thrust", min: 10, max: 80, step: 1 },
       { key: "jetEnergyDrain", label: "Energy drain / s", min: 5, max: 60, step: 1 },
@@ -277,7 +381,23 @@ const SECTIONS: Section[] = [
       { key: "jetForwardBias", label: "Forward bias", min: 0, max: 0.5, step: 0.01 },
       { key: "jetRegenDelay", label: "Regen delay (s)", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
       { key: "jetStartupTime", label: "Startup delay (s)", min: 0, max: 0.1, step: 0.005, format: (v: number) => v.toFixed(3) },
-      { key: "jetKickMultiplier", label: "Jet kick mult", min: 1, max: 5, step: 0.1, format: (v: number) => v.toFixed(1) },
+    ],
+    subgroups: [
+      {
+        title: "Jet kick",
+        toggles: [{ key: "enableJetKick", label: "Sharp initial burst" }],
+        sliders: [
+          {
+            key: "jetKickMultiplier",
+            label: "Kick multiplier",
+            min: 1,
+            max: 5,
+            step: 0.1,
+            format: (v: number) => v.toFixed(1),
+            enabledWhen: (t) => t.enableJetKick,
+          },
+        ],
+      },
     ],
   },
   {
@@ -290,9 +410,6 @@ const SECTIONS: Section[] = [
     sliders: [
       { key: "grappleRange", label: "Range", min: 50, max: 500, step: 10 },
       { key: "grappleSpeed", label: "Hook speed", min: 50, max: 600, step: 10 },
-      { key: "grapplePull", label: "Pull (winch)", min: 10, max: 150, step: 5 },
-      { key: "grappleSwingDamping", label: "Swing damp (winch)", min: 0.8, max: 1, step: 0.01 },
-      { key: "grappleReelSpeed", label: "Reel speed", min: 5, max: 120, step: 5 },
       { key: "grappleConnectBoost", label: "Connect boost", min: 0, max: 50, step: 1 },
       { key: "grappleConnectUpBias", label: "Connect up bias", min: 0, max: 30, step: 1 },
       { key: "grappleAutoDetachRadius", label: "Auto-detach dist", min: 1, max: 20, step: 1 },
@@ -301,16 +418,63 @@ const SECTIONS: Section[] = [
       { key: "grappleReleaseBoost", label: "Release boost", min: 0, max: 20, step: 1 },
       { key: "grappleCameraPull", label: "Camera pull", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
     ],
+    subgroups: [
+      {
+        title: "Winch",
+        sliders: [
+          {
+            key: "grapplePull",
+            label: "Pull force",
+            min: 10,
+            max: 150,
+            step: 5,
+            enabledWhen: (t) => t.grappleMode === "winch",
+          },
+          {
+            key: "grappleSwingDamping",
+            label: "Swing damping",
+            min: 0.8,
+            max: 1,
+            step: 0.01,
+            enabledWhen: (t) => t.grappleMode === "winch",
+          },
+        ],
+      },
+      {
+        title: "Pendulum",
+        sliders: [
+          {
+            key: "grappleReelSpeed",
+            label: "Reel speed",
+            min: 5,
+            max: 120,
+            step: 5,
+            enabledWhen: (t) => t.grappleMode === "pendulum",
+          },
+        ],
+      },
+    ],
   },
   {
     id: "landing",
     title: "Landing & Impact",
     open: false,
+    toggles: [
+      { key: "showImpactHud", label: "Impact HUD toast" },
+    ],
     sliders: [
       { key: "landingRecoveryTime", label: "Landing recovery (s)", min: 0, max: 0.5, step: 0.02, format: (v: number) => v.toFixed(2) },
       { key: "landingSquashFov", label: "Landing squash FOV", min: 0, max: 5, step: 0.1 },
       { key: "landingCameraDip", label: "Landing camera dip", min: 0, max: 5, step: 0.1 },
-      { key: "impactThreshold", label: "Impact threshold", min: 2, max: 30, step: 1 },
+      {
+        key: "landingImpactTangentWeight",
+        label: "Impact tangent mix",
+        min: 0,
+        max: 0.5,
+        step: 0.01,
+        format: (v: number) => v.toFixed(2),
+      },
+      { key: "impactThreshold", label: "Impact threshold", min: 2, max: 100, step: 1 },
       { key: "impactShakeIntensity", label: "Impact shake", min: 0, max: 3, step: 0.1 },
       { key: "impactFovPunch", label: "Impact FOV punch", min: 0, max: 3, step: 0.1 },
       { key: "impactVignette", label: "Impact vignette", min: 0, max: 3, step: 0.1 },
@@ -325,15 +489,70 @@ const SECTIONS: Section[] = [
     ],
     dropdowns: [
       { key: "gravityCamera", label: "Gravity mode", options: CAMERA_MODES, hints: CAMERA_MODE_HINTS },
-      { key: "gravCamTarget", label: "Target", options: SPRING_TARGETS },
-      { key: "gravCamGating", label: "Gating", options: SPRING_GATINGS },
-      { key: "gravCamAirborneFallback", label: "Airborne fallback", options: SPRING_FALLBACKS },
+    ],
+    subgroups: [
+      {
+        title: "Spring targeting",
+        dropdowns: [
+          {
+            key: "gravCamTarget",
+            label: "Target",
+            options: SPRING_TARGETS,
+            enabledWhen: (t) => t.gravityCamera === "spring",
+          },
+          {
+            key: "gravCamGating",
+            label: "Gating",
+            options: SPRING_GATINGS,
+            enabledWhen: (t) => t.gravityCamera === "spring",
+          },
+          {
+            key: "gravCamAirborneFallback",
+            label: "Airborne fallback",
+            options: SPRING_FALLBACKS,
+            enabledWhen: (t) => t.gravityCamera === "spring" && t.gravCamTarget === "surface",
+          },
+        ],
+      },
     ],
     sliders: [
-      { key: "gravityRotSpeed", label: "Spring strength", min: 0.5, max: 10.0, step: 0.1 },
-      { key: "gravCamDeadZone", label: "Dead zone (m)", min: 0, max: 50, step: 1 },
-      { key: "gravCamVelGate", label: "Vel gate threshold", min: 1, max: 30, step: 0.5 },
-      { key: "gravCamDamping", label: "Roll damping", min: 0.5, max: 10, step: 0.1 },
+      {
+        key: "gravityRotSpeed",
+        label: "Orientation strength",
+        min: 0.5,
+        max: 10.0,
+        step: 0.1,
+        enabledWhen: (t) => {
+          const m = t.gravityCamera;
+          return m === "spring" || m === "smooth" || m === "trajectory" || m === "predictive";
+        },
+      },
+      {
+        key: "gravCamVelGate",
+        label: "Vel gate threshold",
+        min: 1,
+        max: 30,
+        step: 0.5,
+        enabledWhen: (t) =>
+          t.gravityCamera === "spring" &&
+          (t.gravCamGating === "velocity" || t.gravCamGating === "velocity+deadzone"),
+      },
+      {
+        key: "gravCamDeadZone",
+        label: "Dead zone (m)",
+        min: 0,
+        max: 50,
+        step: 1,
+        enabledWhen: (t) => t.gravityCamera === "spring" && t.gravCamGating === "velocity+deadzone",
+      },
+      {
+        key: "gravCamDamping",
+        label: "Roll damping",
+        min: 0.5,
+        max: 10,
+        step: 0.1,
+        enabledWhen: (t) => t.gravityCamera === "damping",
+      },
       { key: "mouseSensitivity", label: "Mouse sensitivity", min: 0.0005, max: 0.012, step: 0.0001, format: (v) => v.toFixed(4) },
       { key: "strafeRollAngle", label: "Strafe roll (°)", min: 0, max: 8, step: 0.5 },
       { key: "slopeTiltIntensity", label: "Slope tilt", min: 0, max: 5, step: 0.1 },
@@ -344,14 +563,42 @@ const SECTIONS: Section[] = [
     id: "speedfx",
     title: "Speed Feedback",
     open: false,
-    toggles: [
-      { key: "enableSpeedLines", label: "Speed lines" },
-      { key: "enableFovScaling", label: "Speed FOV" },
-      { key: "enableFovRateScaling", label: "FOV rate scaling (accel)" },
-    ],
-    sliders: [
-      { key: "speedLineIntensity", label: "Speed line intensity", min: 0.1, max: 2, step: 0.1 },
-      { key: "fovScaleAmount", label: "FOV scale", min: 0.05, max: 0.4, step: 0.01 },
+    subgroups: [
+      {
+        title: "Speed lines",
+        toggles: [{ key: "enableSpeedLines", label: "Enable" }],
+        sliders: [
+          {
+            key: "speedLineIntensity",
+            label: "Intensity",
+            min: 0.1,
+            max: 2,
+            step: 0.1,
+            enabledWhen: (t) => t.enableSpeedLines,
+          },
+        ],
+      },
+      {
+        title: "Speed FOV",
+        toggles: [
+          { key: "enableFovScaling", label: "Widen FOV with speed" },
+          {
+            key: "enableFovRateScaling",
+            label: "Also widen on acceleration",
+            enabledWhen: (t) => t.enableFovScaling,
+          },
+        ],
+        sliders: [
+          {
+            key: "fovScaleAmount",
+            label: "FOV scale amount",
+            min: 0.05,
+            max: 0.4,
+            step: 0.01,
+            enabledWhen: (t) => t.enableFovScaling,
+          },
+        ],
+      },
     ],
   },
   {
@@ -359,21 +606,56 @@ const SECTIONS: Section[] = [
     title: "Rendering",
     open: false,
     toggles: [
-      { key: "enableToneMapping", label: "Tone mapping" },
       { key: "enableSkyGradient", label: "Sky gradient" },
       { key: "enableVertexColors", label: "Terrain colors" },
-      { key: "enableHemisphereLight", label: "Hemisphere light" },
       { key: "enableJetParticles", label: "Jet particles" },
       { key: "enableSkiParticles", label: "Ski dust" },
       { key: "enableMarkers", label: "Terrain markers" },
-      { key: "enableCeiling", label: "Ceiling (flat)" },
     ],
     sliders: [
-      { key: "toneMappingExposure", label: "Exposure", min: 0.3, max: 2.5, step: 0.05 },
-      { key: "hemisphereLightIntensity", label: "Hemi intensity", min: 0.1, max: 1.5, step: 0.05 },
       { key: "fogNear", label: "Fog near", min: 20, max: 1000, step: 10 },
       { key: "fogFar", label: "Fog far", min: 100, max: 3000, step: 25 },
       { key: "cameraFar", label: "Render dist", min: 500, max: 4000, step: 50 },
+    ],
+    subgroups: [
+      {
+        title: "Tone mapping",
+        toggles: [{ key: "enableToneMapping", label: "Enable" }],
+        sliders: [
+          {
+            key: "toneMappingExposure",
+            label: "Exposure",
+            min: 0.3,
+            max: 2.5,
+            step: 0.05,
+            enabledWhen: (t) => t.enableToneMapping,
+          },
+        ],
+      },
+      {
+        title: "Hemisphere light",
+        toggles: [{ key: "enableHemisphereLight", label: "Enable" }],
+        sliders: [
+          {
+            key: "hemisphereLightIntensity",
+            label: "Intensity",
+            min: 0.1,
+            max: 1.5,
+            step: 0.05,
+            enabledWhen: (t) => t.enableHemisphereLight,
+          },
+        ],
+      },
+      {
+        title: "Dual surface (flat map)",
+        toggles: [
+          {
+            key: "enableCeiling",
+            label: "Show ceiling terrain",
+            enabledWhen: (t) => t.mapType === "flat",
+          },
+        ],
+      },
     ],
   },
 ];
@@ -421,6 +703,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     </div>
     <div class="tune-panel__rows" id="tune-rows"></div>
     <div class="tune-panel__buttons">
+      <button type="button" class="tune-panel__discard-btn" id="tune-discard-preset">Discard</button>
       <button type="button" class="tune-panel__save-btn" id="tune-save-preset">Save preset</button>
       <button type="button" class="tune-panel__delete-btn" id="tune-delete-preset" style="display:none">Delete</button>
     </div>
@@ -578,10 +861,29 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     .tune-toggle input[type="checkbox"]:checked::after {
       left: 16px;
     }
+    .tune-row.dirty,
+    .tune-toggle.dirty {
+      border-left: 2px solid #5b9fd4;
+      padding-left: 6px;
+    }
     .tune-panel__buttons {
       flex-shrink: 0;
       display: flex;
       gap: 8px;
+    }
+    .tune-panel__discard-btn {
+      padding: 8px 12px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      color: rgba(255,255,255,0.5);
+      cursor: pointer;
+      font-size: 12px;
+      display: none;
+    }
+    .tune-panel__discard-btn:hover {
+      background: rgba(255,255,255,0.1);
+      color: #e8eaed;
     }
     .tune-panel__save-btn {
       flex: 1;
@@ -617,6 +919,35 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       color: rgba(255,255,255,0.45);
       line-height: 1.3;
       padding: 2px 0 6px;
+    }
+    .tune-dropdown-stack {
+      margin-bottom: 10px;
+    }
+    .tune-dropdown-stack:last-child {
+      margin-bottom: 0;
+    }
+    .tune-subgroup {
+      margin: 12px 0 10px;
+      padding: 8px 10px 6px;
+      border-left: 2px solid rgba(91, 159, 212, 0.4);
+      border-radius: 4px;
+      background: rgba(255,255,255,0.03);
+    }
+    .tune-subgroup__title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      opacity: 0.55;
+      margin: 0 0 8px;
+      font-weight: 600;
+    }
+    .tune-row--disabled,
+    .tune-toggle.tune-row--disabled {
+      opacity: 0.48;
+    }
+    .tune-row--disabled input[type="range"],
+    .tune-toggle.tune-row--disabled input[type="checkbox"] {
+      cursor: not-allowed;
     }
   `;
   document.head.appendChild(style);
@@ -656,6 +987,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     tuning.mapType = mapSelect.value as MapType;
     saveTuning();
     updateDirtyState();
+    refreshDependencyStates();
     for (const fn of mapChangeListeners) fn(tuning.mapType);
   });
 
@@ -714,6 +1046,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
 
   const saveBtn = root.querySelector("#tune-save-preset") as HTMLButtonElement;
   const deleteBtn = root.querySelector("#tune-delete-preset") as HTMLButtonElement;
+  const discardBtn = root.querySelector("#tune-discard-preset") as HTMLButtonElement;
 
   function getActivePresetResolved(): GameTuning {
     if (currentPresetId === null) return getCurrentTuningSnapshot();
@@ -739,6 +1072,15 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     saveBtn.textContent = dirty ? "Save preset *" : "Save preset";
     saveBtn.classList.toggle("dirty", dirty);
     deleteBtn.style.display = (!currentPresetBuiltIn && currentPresetId !== null) ? "" : "none";
+    discardBtn.style.display = dirty ? "" : "none";
+
+    const resolved = currentPresetId !== null ? getActivePresetResolved() : null;
+    const allRows = root.querySelectorAll<HTMLElement>("[data-tuning-key]");
+    for (const el of allRows) {
+      const key = el.dataset.tuningKey as keyof GameTuning;
+      const isDirtyRow = resolved !== null && tuning[key] !== resolved[key];
+      el.classList.toggle("dirty", isDirtyRow);
+    }
   }
 
   function generateCustomName(baseName: string): string {
@@ -792,37 +1134,79 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   presetRow.appendChild(presetSelect);
   rowsEl.appendChild(presetRow);
 
-  // --- Per-mode visibility for gravity camera ---
-  let gravCamBody: HTMLElement | null = null;
+  type DependencyBinding = {
+    root: HTMLElement;
+    inputs: Array<HTMLInputElement | HTMLSelectElement>;
+    enabledWhen: EnabledWhen;
+  };
+  const dependencyBindings: DependencyBinding[] = [];
 
-  function updateGravCamVisibility(): void {
-    if (!gravCamBody) return;
-    const mode = tuning.gravityCamera;
-    const isSpring = mode === "spring";
-    const target = tuning.gravCamTarget;
-    const gating = tuning.gravCamGating;
-
-    const visibility: Record<string, boolean> = {
-      gravCamTarget: isSpring,
-      gravCamGating: isSpring,
-      gravCamAirborneFallback: isSpring && target === "surface",
-      gravityRotSpeed: isSpring || mode === "smooth" || mode === "trajectory" || mode === "predictive",
-      gravCamVelGate: isSpring && (gating === "velocity" || gating === "velocity+deadzone"),
-      gravCamDeadZone: isSpring && gating === "velocity+deadzone",
-      gravCamDamping: mode === "damping",
-    };
-
-    const rows = gravCamBody.querySelectorAll<HTMLElement>("[data-tuning-key]");
-    for (const el of rows) {
-      const key = el.dataset.tuningKey!;
-      if (key in visibility) {
-        el.style.display = visibility[key] ? "" : "none";
+  function refreshDependencyStates(): void {
+    for (const b of dependencyBindings) {
+      const on = b.enabledWhen(tuning);
+      b.root.classList.toggle("tune-row--disabled", !on);
+      for (const inp of b.inputs) {
+        inp.disabled = !on;
       }
     }
   }
 
   // --- Collapsible sections ---
   const allDropdownInputs: { key: keyof GameTuning; select: HTMLSelectElement; hintEl?: HTMLElement; hints?: Record<string, string> }[] = [];
+  function buildDropdownRow(dd: DropdownDef, container: HTMLElement): void {
+    const stack = document.createElement("div");
+    stack.className = "tune-dropdown-stack";
+
+    const row = document.createElement("div");
+    row.className = "tune-row";
+    row.dataset.tuningKey = dd.key;
+    const ddTip = TIPS[dd.key];
+    if (ddTip) row.title = ddTip;
+    const label = document.createElement("label");
+    const name = document.createElement("span");
+    name.className = "tune-name";
+    name.textContent = dd.label;
+    label.appendChild(name);
+
+    const sel = document.createElement("select");
+    for (const o of dd.options) {
+      const opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.appendChild(opt);
+    }
+    sel.value = tuning[dd.key] as string;
+    let hintEl: HTMLElement | null = null;
+    if (dd.hints) {
+      hintEl = document.createElement("div");
+      hintEl.className = "tune-dropdown-hint";
+      hintEl.dataset.tuningKey = dd.key;
+      hintEl.textContent = dd.hints[sel.value] ?? "";
+    }
+
+    sel.addEventListener("change", () => {
+      (tuning as unknown as Record<string, string>)[dd.key] = sel.value;
+      saveTuning();
+      updateDirtyState();
+      if (hintEl && dd.hints) {
+        hintEl.textContent = dd.hints[sel.value] ?? "";
+      }
+      refreshDependencyStates();
+    });
+
+    row.appendChild(label);
+    row.appendChild(sel);
+    stack.appendChild(row);
+    if (hintEl) stack.appendChild(hintEl);
+    container.appendChild(stack);
+
+    allDropdownInputs.push({ key: dd.key, select: sel, hintEl: hintEl ?? undefined, hints: dd.hints });
+
+    if (dd.enabledWhen) {
+      dependencyBindings.push({ root: stack, inputs: [sel], enabledWhen: dd.enabledWhen });
+    }
+  }
+
   function buildSliderRow(def: SliderDef, container: HTMLElement): void {
     const row = document.createElement("div");
     row.className = "tune-row";
@@ -867,11 +1251,15 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     row.appendChild(input);
     container.appendChild(row);
     allSliderInputs.push({ def, input });
+    if (def.enabledWhen) {
+      dependencyBindings.push({ root: row, inputs: [input], enabledWhen: def.enabledWhen });
+    }
   }
 
   function buildToggleRow(def: ToggleDef, container: HTMLElement): void {
     const row = document.createElement("div");
     row.className = "tune-toggle";
+    row.dataset.tuningKey = def.key;
     const tip = TIPS[def.key];
     if (tip) row.title = tip;
 
@@ -887,12 +1275,16 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       (tuning as unknown as Record<string, boolean>)[def.key] = input.checked;
       saveTuning();
       updateDirtyState();
+      refreshDependencyStates();
     });
 
     row.appendChild(name);
     row.appendChild(input);
     container.appendChild(row);
     allToggleInputs.push({ def, input });
+    if (def.enabledWhen) {
+      dependencyBindings.push({ root: row, inputs: [input], enabledWhen: def.enabledWhen });
+    }
   }
 
   const savedState = loadSectionState();
@@ -914,70 +1306,39 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     const body = document.createElement("div");
     body.className = "tune-section__body";
 
-    if (section.dropdowns) {
-      for (const dd of section.dropdowns) {
-        const row = document.createElement("div");
-        row.className = "tune-row";
-        row.dataset.tuningKey = dd.key;
-        const ddTip = TIPS[dd.key];
-        if (ddTip) row.title = ddTip;
-        const label = document.createElement("label");
-        const name = document.createElement("span");
-        name.className = "tune-name";
-        name.textContent = dd.label;
-        label.appendChild(name);
-
-        const sel = document.createElement("select");
-        for (const o of dd.options) {
-          const opt = document.createElement("option");
-          opt.value = o.value;
-          opt.textContent = o.label;
-          sel.appendChild(opt);
-        }
-        sel.value = tuning[dd.key] as string;
-        let hintEl: HTMLElement | null = null;
-        if (dd.hints) {
-          hintEl = document.createElement("div");
-          hintEl.className = "tune-dropdown-hint";
-          hintEl.dataset.tuningKey = dd.key;
-          hintEl.textContent = dd.hints[sel.value] ?? "";
-        }
-
-        sel.addEventListener("change", () => {
-          (tuning as unknown as Record<string, string>)[dd.key] = sel.value;
-          saveTuning();
-          updateDirtyState();
-          if (hintEl && dd.hints) {
-            hintEl.textContent = dd.hints[sel.value] ?? "";
-          }
-          updateGravCamVisibility();
-        });
-
-        row.appendChild(label);
-        row.appendChild(sel);
-        body.appendChild(row);
-        if (hintEl) body.appendChild(hintEl);
-        allDropdownInputs.push({ key: dd.key, select: sel, hintEl: hintEl ?? undefined, hints: dd.hints });
-      }
+    for (const dd of section.dropdowns ?? []) {
+      buildDropdownRow(dd, body);
     }
-    if (section.toggles) {
-      for (const def of section.toggles) {
-        buildToggleRow(def, body);
-      }
+    for (const def of section.toggles ?? []) {
+      buildToggleRow(def, body);
     }
-    for (const def of section.sliders) {
+    for (const def of section.sliders ?? []) {
       buildSliderRow(def, body);
     }
-
-    if (section.id === "camera") {
-      gravCamBody = body;
+    for (const sg of section.subgroups ?? []) {
+      const wrap = document.createElement("div");
+      wrap.className = "tune-subgroup";
+      const sgTitle = document.createElement("div");
+      sgTitle.className = "tune-subgroup__title";
+      sgTitle.textContent = sg.title;
+      wrap.appendChild(sgTitle);
+      for (const dd of sg.dropdowns ?? []) {
+        buildDropdownRow(dd, wrap);
+      }
+      for (const def of sg.toggles ?? []) {
+        buildToggleRow(def, wrap);
+      }
+      for (const def of sg.sliders ?? []) {
+        buildSliderRow(def, wrap);
+      }
+      body.appendChild(wrap);
     }
 
     details.appendChild(body);
     rowsEl.appendChild(details);
   }
 
-  updateGravCamVisibility();
+  refreshDependencyStates();
 
   function syncUIFromTuning(): void {
     mapSelect.value = tuning.mapType;
@@ -997,7 +1358,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     for (const { def, input } of allToggleInputs) {
       input.checked = tuning[def.key] as boolean;
     }
-    updateGravCamVisibility();
+    refreshDependencyStates();
   }
 
   // --- Save preset ---
@@ -1040,6 +1401,24 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       }
     }
     updateDirtyState();
+  });
+
+  // --- Discard changes ---
+  discardBtn.addEventListener("click", () => {
+    if (currentPresetId === null) return;
+    const prevMap = tuning.mapType;
+    if (currentPresetBuiltIn) {
+      applyBuiltInPreset(currentPresetId);
+    } else {
+      const cp = customPresets.find(p => p.id === currentPresetId);
+      if (cp) applyCustomPreset(cp);
+    }
+    syncUIFromTuning();
+    updateDirtyState();
+    if (tuning.mapType !== prevMap) {
+      for (const fn of mapChangeListeners) fn(tuning.mapType);
+    }
+    player.snapToGround();
   });
 
   // --- Delete preset ---

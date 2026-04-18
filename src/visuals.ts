@@ -336,19 +336,23 @@ export class VisualSystem {
     this.currentFov += (fovTarget - this.currentFov) * Math.min(1, fovLerpRate * dt);
     this.prevSpeed = player.speed;
 
-    // Landing squash FOV
-    if (player.justLanded && tuning.landingSquashFov > 0) {
+    // Landing squash FOV — brief narrow on soft landings; hard hits use impact punch only (no stacked opposite FOV).
+    if (
+      player.justLanded &&
+      tuning.landingSquashFov > 0 &&
+      player.lastImpact <= tuning.impactThreshold
+    ) {
       this.landingSquashTimer = 0.15;
       this.landingSquashAmount = Math.min(6, player.lastImpact * 0.15) * tuning.landingSquashFov;
     }
-    let squashFov = 0;
+    let squashNarrow = 0;
     if (this.landingSquashTimer > 0) {
       this.landingSquashTimer -= dt;
       const t = Math.max(0, this.landingSquashTimer / 0.15);
-      squashFov = this.landingSquashAmount * Math.sin(t * Math.PI);
+      squashNarrow = this.landingSquashAmount * Math.sin(t * Math.PI);
     }
 
-    // Impact feedback — screen shake + FOV punch
+    // Impact feedback — screen shake + FOV widen (hard landings only)
     const impactForce = player.lastImpact;
     if (impactForce > tuning.impactThreshold) {
       const normalized = Math.min(1, (impactForce - tuning.impactThreshold) / 30);
@@ -356,7 +360,7 @@ export class VisualSystem {
       this.impactTimer = 0.35;
       this.impactFovKick = normalized * 8 * tuning.impactFovPunch;
     }
-    let fovKick = 0;
+    let fovPunchWiden = 0;
     if (this.impactTimer > 0) {
       this.impactTimer -= dt;
       const t = Math.max(0, this.impactTimer / 0.35);
@@ -367,12 +371,12 @@ export class VisualSystem {
         (Math.random() - 0.5) * 1 * shakeAmp,
       );
       this.camera.position.add(this.impactOffset);
-      fovKick = this.impactFovKick * t;
+      fovPunchWiden = this.impactFovKick * t;
     } else {
       this._impactIntensity = 0;
     }
 
-    const finalFov = this.currentFov + squashFov - fovKick;
+    const finalFov = this.currentFov - squashNarrow + fovPunchWiden;
     if (Math.abs(this.camera.fov - finalFov) > 0.01) {
       this.camera.fov = finalFov;
       this.camera.updateProjectionMatrix();

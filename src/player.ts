@@ -23,6 +23,25 @@ export class PlayerController {
   /** Set to true on the frame grounded transitions from false→true. */
   justLanded = false;
 
+  /** Landing-angle HUD: timer > 0 while a boost/penalty toast is shown. */
+  landingAngleHudTimer = 0;
+  /** True = aligned downhill boost; false = misaligned penalty. */
+  landingAngleHudBoost = true;
+  /** Approximate speed multiplier delta as percent (−70 = −70%). */
+  landingAngleHudPct = 0;
+  /** True on the frame applyLandingAngle gave a boost (alignment > 0.1). Reset each update(). */
+  landingGotAlignBoost = false;
+
+  /** Impact HUD: into-surface speed (m/s) on the hit that triggered the toast. */
+  impactHudTimer = 0;
+  impactHudSpeed = 0;
+  /** True if impact exceeded impactThreshold (hard hit). */
+  impactHudHard = false;
+  /** Percent above impactThreshold (e.g. 50 → 150% of threshold speed). */
+  impactHudOverPct = 0;
+  /** Shake/punch curve intensity 0–100 (matches visuals normalization over 30 m/s span). */
+  impactHudFxPct = 0;
+
   private timeSinceGrounded = 0;
   private prevSkiing = false;
   private prevJetting = false;
@@ -291,6 +310,7 @@ export class PlayerController {
 
   update(dt: number, input: InputState): void {
     this.lastImpact = 0;
+    this.landingGotAlignBoost = false;
     const wasGrounded = this.grounded;
     const wasSkiing = this.prevSkiing;
     const wasGrappled = this.grappleAttached;
@@ -370,7 +390,19 @@ export class PlayerController {
     }
 
     // --- Landing recovery ---
-    if (this.justLanded && tuning.landingRecoveryTime > 0 && this.lastImpact > tuning.impactThreshold) {
+    if (this.landingAngleHudTimer > 0) {
+      this.landingAngleHudTimer = Math.max(0, this.landingAngleHudTimer - dt);
+    }
+    if (this.impactHudTimer > 0) {
+      this.impactHudTimer = Math.max(0, this.impactHudTimer - dt);
+    }
+
+    if (tuning.showImpactHud && this.lastImpact >= 1) {
+      this.triggerImpactHudFlash(this.lastImpact);
+    }
+
+    const alignSkipsRecovery = tuning.alignCancelsRecovery && this.landingGotAlignBoost;
+    if (this.justLanded && tuning.landingRecoveryTime > 0 && this.lastImpact > tuning.impactThreshold && !alignSkipsRecovery) {
       this.landingRecoveryTimer = tuning.landingRecoveryTime;
     }
     if (this.landingRecoveryTimer > 0) {
@@ -679,8 +711,12 @@ export class PlayerController {
 
         if (!this.grounded) {
           const velDotOutward = this.velocity.dot(dirFromCenter);
+          const vLen = this.velocity.length();
+          const tanSq = Math.max(0, vLen * vLen - velDotOutward * velDotOutward);
+          const landMetric =
+            Math.abs(velDotOutward) + Math.sqrt(tanSq) * tuning.landingImpactTangentWeight;
+          this.lastImpact = Math.max(this.lastImpact, landMetric);
           if (velDotOutward > 0) {
-            this.lastImpact = Math.max(this.lastImpact, velDotOutward);
             this.velocity.addScaledVector(dirFromCenter, -velDotOutward);
           }
           this.applyLandingAngle(this._tv6.copy(dirFromCenter).negate());
@@ -1023,8 +1059,11 @@ export class PlayerController {
       if (!this.grounded) {
         const velDotN = this.velocity.dot(this.groundNormal);
         const velTowardSurface = onCeiling ? velDotN > 0 : velDotN < 0;
+        const tanSq = Math.max(0, this.velocity.lengthSq() - velDotN * velDotN);
+        const landMetric =
+          Math.abs(velDotN) + Math.sqrt(tanSq) * tuning.landingImpactTangentWeight;
+        this.lastImpact = Math.max(this.lastImpact, landMetric);
         if (velTowardSurface) {
-          this.lastImpact = Math.max(this.lastImpact, Math.abs(velDotN));
           this.velocity.addScaledVector(this.groundNormal, -velDotN);
         }
         this.applyLandingAngle(this._tv4.set(0, -gravSign, 0));
@@ -1060,8 +1099,11 @@ export class PlayerController {
             if (hit.face) this.groundNormal.copy(hit.face.normal);
             const velDotN = this.velocity.dot(this.groundNormal);
             const velTowardSurface = onCeiling ? velDotN > 0 : velDotN < 0;
+            const tanSq = Math.max(0, this.velocity.lengthSq() - velDotN * velDotN);
+            const landMetric =
+              Math.abs(velDotN) + Math.sqrt(tanSq) * tuning.landingImpactTangentWeight;
+            this.lastImpact = Math.max(this.lastImpact, landMetric);
             if (velTowardSurface) {
-              this.lastImpact = Math.max(this.lastImpact, Math.abs(velDotN));
               this.velocity.addScaledVector(this.groundNormal, -velDotN);
             }
             this.grounded = true;
@@ -1100,11 +1142,40 @@ export class PlayerController {
       const savedY = this.velocity.y;
       this.velocity.multiplyScalar(factor);
       this.velocity.y = savedY;
+      this.landingGotAlignBoost = true;
+      this.setLandingAngleHudFlash(true, factor);
     } else if (alignment < -0.1) {
-      const factor = 1 + alignment * downhillLen * 2 * tuning.landingAnglePenalty;
+      const rawFactor = 1 + alignment * downhillLen * 2 * tuning.landingAnglePenalty;
+      const factor = Math.max(0.3, rawFactor);
       const savedY = this.velocity.y;
-      this.velocity.multiplyScalar(Math.max(0.3, factor));
+      this.velocity.multiplyScalar(factor);
       this.velocity.y = savedY;
+      this.setLandingAngleHudFlash(false, factor);
+    }
+  }
+
+  private setLandingAngleHudFlash(isBoost: boolean, speedFactor: number): void {
+    if (!tuning.showLandingAngleHud) return;
+    this.landingAngleHudTimer = 1.35;
+    this.landingAngleHudBoost = isBoost;
+    this.landingAngleHudPct = Math.round((speedFactor - 1) * 100);
+  }
+
+  private triggerImpactHudFlash(impactMs: number): void {
+    if (!tuning.showImpactHud) return;
+    this.impactHudTimer = 1.35;
+    this.impactHudSpeed = impactMs;
+    const th = tuning.impactThreshold;
+    this.impactHudHard = impactMs > th;
+    if (this.impactHudHard) {
+      const over = Math.max(0.01, th);
+      this.impactHudOverPct = Math.round((impactMs / over - 1) * 100);
+      this.impactHudFxPct = Math.round(
+        Math.min(1, (impactMs - th) / 30) * 100,
+      );
+    } else {
+      this.impactHudOverPct = 0;
+      this.impactHudFxPct = 0;
     }
   }
 
@@ -1294,6 +1365,10 @@ export class PlayerController {
       this.grappleRetracting = false;
       return;
     }
+    // Move hook with the player so retract speed is purely "gap closing" rate,
+    // not fighting player movement that happens later this frame.
+    this.grappleHookPos.addScaledVector(this.velocity, dt);
+
     const hand = this._tv7.copy(this._grappleHandLocal).applyQuaternion(this.camera.quaternion).add(this.position);
     const toHand = this._tv8.subVectors(hand, this.grappleHookPos);
     const dist = toHand.length();

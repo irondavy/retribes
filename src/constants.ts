@@ -73,11 +73,15 @@ export interface GameTuning {
 
   impactThreshold: number;
   impactShakeIntensity: number;
+  /** Hard landings: scales brief FOV widen (degrees). */
   impactFovPunch: number;
   impactVignette: number;
+  /** Toast below crosshair when you hit a surface (into-surface speed, % vs threshold, FX strength). */
+  showImpactHud: boolean;
 
   // Feel
   coyoteTime: number;
+  /** Soft landings (≤ impact threshold): scales brief FOV narrow; hard hits use punch widen only. */
   landingSquashFov: number;
   skiEntryBoost: number;
   strafeRollAngle: number;
@@ -93,6 +97,10 @@ export interface GameTuning {
   enableLandingAngle: boolean;
   landingAngleBoost: number;
   landingAnglePenalty: number;
+  /** Brief on-screen % when landing angle boost/penalty applies (requires landing angle on). */
+  showLandingAngleHud: boolean;
+  /** When true, a well-aligned landing (angle boost) skips landing recovery even on hard hits. */
+  alignCancelsRecovery: boolean;
   skiGroundAdherence: number;
   skiLaunchWindow: number;
   /** Releasing ski adds tangent + “pop” impulse — helps launch off lips instead of gripping. */
@@ -114,6 +122,8 @@ export interface GameTuning {
   grappleCameraPull: number;
   airControlSpeedReduction: number;
   landingCameraDip: number;
+  /** How much surface-parallel speed contributes to landing impact (FX / HUD / recovery), alongside |v·n|. */
+  landingImpactTangentWeight: number;
   turnInertia: number;
   jetStartupTime: number;
   /** Max horizontal (flat) or tangential (sphere) surface speed in m/s; 0 = no cap. */
@@ -183,6 +193,7 @@ export const _builtinDefaults: GameTuning = {
   impactShakeIntensity: 1.0,
   impactFovPunch: 1.0,
   impactVignette: 1.0,
+  showImpactHud: true,
 
   coyoteTime: 0,
   landingSquashFov: 0,
@@ -200,6 +211,8 @@ export const _builtinDefaults: GameTuning = {
   enableLandingAngle: false,
   landingAngleBoost: 1.0,
   landingAnglePenalty: 1.0,
+  showLandingAngleHud: true,
+  alignCancelsRecovery: true,
   skiGroundAdherence: 0,
   skiLaunchWindow: 0,
   enableSkiReleaseBoost: true,
@@ -216,6 +229,7 @@ export const _builtinDefaults: GameTuning = {
   grappleCameraPull: 0,
   airControlSpeedReduction: 0,
   landingCameraDip: 0,
+  landingImpactTangentWeight: 0.15,
   turnInertia: 0,
   jetStartupTime: 0,
   maxSpeed: 0,
@@ -316,6 +330,7 @@ export const BUILT_IN_PRESETS: Preset[] = [
     label: "Default",
     values: {
       // Skiing focus
+      skiFriction: 0.01,
       enableSlopeFriction: true,
       enableLandingAngle: true,
       landingAngleBoost: 1,
@@ -332,13 +347,18 @@ export const BUILT_IN_PRESETS: Preset[] = [
       // Gravity camera
       gravityCamera: "spring",
       gravCamTarget: "surface",
-      gravCamAirborneFallback: "blended",
-      gravityRotSpeed: 1,
+      gravCamAirborneFallback: "hold",
+      gravityRotSpeed: 0.8,
       // Grapple (from Titanfall)
       grappleMode: "pendulum",
+      grappleRange: 150,
+      grappleSpeed: 300,
       grappleReelSpeed: 60,
       grappleConnectBoost: 20,
       grappleConnectUpBias: 12,
+      grappleAutoDetachRadius: 8,
+      grappleRetractSpeed: 200,
+      grappleHookVisualScale: 4,
       grappleReleaseBoost: 10,
       grappleCameraPull: 0.5,
       // Air movement (from Titanfall)
@@ -346,6 +366,8 @@ export const BUILT_IN_PRESETS: Preset[] = [
       airDrag: 0.03,
       turnInertia: 0.2,
       // Momentum / jet (from Titanfall)
+      jetThrust: 30,
+      jetEnergyDrain: 30,
       coyoteTime: 100,
       enableJetKick: true,
       skiEntryBoost: 4,
@@ -353,14 +375,21 @@ export const BUILT_IN_PRESETS: Preset[] = [
       chainBonusMultiplier: 0.01,
       jetRegenDelay: 0.4,
       // Camera / feel (from Titanfall)
-      strafeRollAngle: 3,
+      strafeRollAngle: 0,
+      slopeTiltIntensity: 0.1,
       enableFovRateScaling: true,
       enableSpeedLines: true,
       speedLineIntensity: 0.7,
-      landingCameraDip: 1.0,
-      landingSquashFov: 1.0,
-      landingRecoveryTime: 0.1,
+      landingCameraDip: 0.7,
+      landingSquashFov: 0.3,
+      landingRecoveryTime: 0.2,
+      impactThreshold: 30,
+      impactShakeIntensity: 2,
+      impactVignette: 2,
       // Player / visuals
+      walkSpeed: 8,
+      groundSnapThreshold: 0.1,
+      enableMantle: true,
       playerHeight: 1.8,
       enableSkyGradient: true,
       fogNear: 20,
