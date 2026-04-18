@@ -87,6 +87,14 @@ let playersEl: HTMLElement;
 let vignetteEl: HTMLElement;
 let speedLinesEl: HTMLElement;
 
+let lastSpeed = -1;
+let lastAlt = -1;
+let lastEnergy = -1;
+let lastEnergyColor = "";
+let lastPlayerCount = -1;
+let lastVignetteOp = "";
+let lastSpeedLinesOp = "";
+
 export function initHUD(initialPanelVisible: boolean): void {
   const badgeStyle = document.createElement("style");
   badgeStyle.textContent = `
@@ -125,18 +133,26 @@ export function initHUD(initialPanelVisible: boolean): void {
 
 export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash = 0): void {
   const speed = Math.round(player.speed * 3.6);
-  speedEl.textContent = `${speed} km/h`;
+  if (speed !== lastSpeed) {
+    speedEl.textContent = `${speed} km/h`;
+    lastSpeed = speed;
+  }
 
   const alt = Math.round(player.altitude);
-  altEl.textContent = `${alt} m`;
+  if (alt !== lastAlt) {
+    altEl.textContent = `${alt} m`;
+    lastAlt = alt;
+  }
 
-  energyFillEl.style.width = `${player.energy}%`;
-  if (player.energy < 20) {
-    energyFillEl.style.background = "#ff4444";
-  } else if (player.energy < 50) {
-    energyFillEl.style.background = "#ffaa22";
-  } else {
-    energyFillEl.style.background = "#44bbff";
+  const energy = Math.round(player.energy);
+  if (energy !== lastEnergy) {
+    energyFillEl.style.width = `${player.energy}%`;
+    lastEnergy = energy;
+  }
+  const color = player.energy < 20 ? "#ff4444" : player.energy < 50 ? "#ffaa22" : "#44bbff";
+  if (color !== lastEnergyColor) {
+    energyFillEl.style.background = color;
+    lastEnergyColor = color;
   }
 
   skiBadge.classList.toggle("active", player.skiing && player.grounded);
@@ -144,18 +160,30 @@ export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash
   grappleBadge.classList.toggle("active", player.grappleAttached);
 
   const total = 1 + remoteCount;
-  playersEl.textContent = `${total} player${total !== 1 ? "s" : ""}`;
+  if (total !== lastPlayerCount) {
+    playersEl.textContent = `${total} player${total !== 1 ? "s" : ""}`;
+    lastPlayerCount = total;
+  }
 
   const vignetteOpacity = impactFlash * tuning.impactVignette;
-  vignetteEl.style.opacity = vignetteOpacity > 0.01 ? String(vignetteOpacity) : "0";
+  const vigOp = vignetteOpacity > 0.01 ? String(vignetteOpacity) : "0";
+  if (vigOp !== lastVignetteOp) {
+    vignetteEl.style.opacity = vigOp;
+    lastVignetteOp = vigOp;
+  }
 
+  let slOp: string;
   if (tuning.enableSpeedLines) {
     const speedThreshold = 20;
     const speedMax = 80;
     const t = Math.max(0, Math.min(1, (player.speed - speedThreshold) / (speedMax - speedThreshold)));
     const lineOpacity = t * tuning.speedLineIntensity;
-    speedLinesEl.style.opacity = lineOpacity > 0.01 ? String(lineOpacity) : "0";
+    slOp = lineOpacity > 0.01 ? String(lineOpacity) : "0";
   } else {
-    speedLinesEl.style.opacity = "0";
+    slOp = "0";
+  }
+  if (slOp !== lastSpeedLinesOp) {
+    speedLinesEl.style.opacity = slOp;
+    lastSpeedLinesOp = slOp;
   }
 }

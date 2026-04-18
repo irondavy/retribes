@@ -1,5 +1,11 @@
-import type { GameTuning, MapType } from "./constants";
-import { tuning, tuningDefaults, resetTuning, saveTuning, saveAsDefaults, PRESETS, applyPreset } from "./constants";
+import type { GameTuning, MapType, Preset } from "./constants";
+import {
+  tuning, saveTuning, _builtinDefaults,
+  BUILT_IN_PRESETS, applyBuiltInPreset, applyCustomPreset,
+  loadCustomPresets, saveCustomPresets,
+  getActivePresetId, setActivePresetId,
+  getCurrentTuningSnapshot, resolvePresetValues,
+} from "./constants";
 import type { PlayerController } from "./player";
 
 const mapChangeListeners: Array<(mapType: MapType) => void> = [];
@@ -28,6 +34,7 @@ type DropdownDef = {
   key: keyof GameTuning;
   label: string;
   options: { value: string; label: string }[];
+  hints?: Record<string, string>;
 };
 
 type Section = {
@@ -57,18 +64,42 @@ function saveSectionState(id: string, open: boolean): void {
 
 const CAMERA_MODES: { value: string; label: string }[] = [
   { value: "none", label: "None (manual)" },
+  { value: "spring", label: "Spring" },
   { value: "smooth", label: "Smooth slerp (on flip)" },
   { value: "snap", label: "Snap on land" },
-  { value: "spring", label: "Continuous spring" },
-  { value: "blend", label: "Blended target up" },
-  { value: "velocity", label: "Velocity-gated spring" },
   { value: "damping", label: "Roll damping" },
-  { value: "blend+vel", label: "Blend + velocity + dead zone" },
-  { value: "surface", label: "Surface normal (grounded)" },
-  { value: "hybrid", label: "Hybrid (surface + blend)" },
   { value: "trajectory", label: "Trajectory (felt forces)" },
   { value: "horizon-lock", label: "Horizon lock (hard)" },
   { value: "predictive", label: "Predictive (look-ahead)" },
+];
+
+const CAMERA_MODE_HINTS: Record<string, string> = {
+  "none": "No automatic correction — camera roll drifts freely as gravity changes.",
+  "spring": "Springs toward a target 'up' direction. Configure target, gating, and fallback below.",
+  "smooth": "Smoothly interpolates upright orientation only when gravity flips.",
+  "snap": "Instantly snaps to upright the moment you touch the ground.",
+  "damping": "Resists roll rate rather than targeting a direction — feels loose but stable.",
+  "trajectory": "Derives 'up' from felt acceleration (gravity + thrust) — tilts into movement like a cockpit.",
+  "horizon-lock": "Hard-locks roll to the current gravity direction with zero drift tolerance.",
+  "predictive": "Anticipates upcoming gravity changes based on your trajectory and pre-rotates.",
+};
+
+const SPRING_TARGETS: { value: string; label: string }[] = [
+  { value: "gravity", label: "Gravity direction" },
+  { value: "blended", label: "Blended (smooth transition)" },
+  { value: "surface", label: "Surface normal (grounded)" },
+];
+
+const SPRING_GATINGS: { value: string; label: string }[] = [
+  { value: "none", label: "None (always active)" },
+  { value: "velocity", label: "Velocity-gated" },
+  { value: "velocity+deadzone", label: "Velocity + dead zone" },
+];
+
+const SPRING_FALLBACKS: { value: string; label: string }[] = [
+  { value: "gravity", label: "Gravity direction" },
+  { value: "blended", label: "Blended" },
+  { value: "hold", label: "Hold (no correction)" },
 ];
 
 const GRAPPLE_MODES: { value: string; label: string }[] = [
@@ -98,7 +129,10 @@ const SECTIONS: Section[] = [
     title: "Gravity Camera",
     open: false,
     dropdowns: [
-      { key: "gravityCamera", label: "Mode", options: CAMERA_MODES },
+      { key: "gravityCamera", label: "Mode", options: CAMERA_MODES, hints: CAMERA_MODE_HINTS },
+      { key: "gravCamTarget", label: "Target", options: SPRING_TARGETS },
+      { key: "gravCamGating", label: "Gating", options: SPRING_GATINGS },
+      { key: "gravCamAirborneFallback", label: "Airborne fallback", options: SPRING_FALLBACKS },
     ],
     sliders: [
       { key: "gravityRotSpeed", label: "Spring strength", min: 0.5, max: 10.0, step: 0.1 },
@@ -252,8 +286,8 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     </div>
     <div class="tune-panel__rows" id="tune-rows"></div>
     <div class="tune-panel__buttons">
-      <button type="button" class="tune-panel__reset" id="tune-reset">Reset defaults</button>
-      <button type="button" class="tune-panel__reset tune-panel__save" id="tune-save-defaults">Save as defaults</button>
+      <button type="button" class="tune-panel__save-btn" id="tune-save-preset">Save preset</button>
+      <button type="button" class="tune-panel__delete-btn" id="tune-delete-preset" style="display:none">Delete</button>
     </div>
   `;
   fpsEl = root.querySelector("#tune-fps")!;
@@ -414,7 +448,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       display: flex;
       gap: 8px;
     }
-    .tune-panel__reset {
+    .tune-panel__save-btn {
       flex: 1;
       padding: 8px 12px;
       background: rgba(255,255,255,0.08);
@@ -424,8 +458,30 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       cursor: pointer;
       font-size: 12px;
     }
-    .tune-panel__reset:hover {
+    .tune-panel__save-btn:hover {
       background: rgba(255,255,255,0.12);
+    }
+    .tune-panel__save-btn.dirty {
+      border-color: #5b9fd4;
+      color: #8ab4f8;
+    }
+    .tune-panel__delete-btn {
+      padding: 8px 12px;
+      background: rgba(255,80,80,0.15);
+      border: 1px solid rgba(255,80,80,0.3);
+      border-radius: 6px;
+      color: #ff8888;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .tune-panel__delete-btn:hover {
+      background: rgba(255,80,80,0.25);
+    }
+    .tune-dropdown-hint {
+      font-size: 11px;
+      color: rgba(255,255,255,0.45);
+      line-height: 1.3;
+      padding: 2px 0 6px;
     }
   `;
   document.head.appendChild(style);
@@ -463,6 +519,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   mapSelect.addEventListener("change", () => {
     tuning.mapType = mapSelect.value as MapType;
     saveTuning();
+    updateDirtyState();
     for (const fn of mapChangeListeners) fn(tuning.mapType);
   });
 
@@ -471,6 +528,14 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   rowsEl.appendChild(mapRow);
 
   // --- Preset selector ---
+  let customPresets = loadCustomPresets();
+  let currentPresetId: string | null = getActivePresetId();
+  let currentPresetBuiltIn = currentPresetId !== null
+    ? BUILT_IN_PRESETS.some(p => p.id === currentPresetId)
+    : true;
+
+  const NEW_PRESET_VALUE = "__new__";
+
   const presetRow = document.createElement("div");
   presetRow.className = "tune-row";
   presetRow.style.marginBottom = "12px";
@@ -481,17 +546,106 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   presetLabel.appendChild(presetName);
 
   const presetSelect = document.createElement("select");
-  for (const p of PRESETS) {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.label;
-    presetSelect.appendChild(opt);
+
+  function rebuildPresetOptions(): void {
+    presetSelect.innerHTML = "";
+    for (const p of BUILT_IN_PRESETS) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.label;
+      presetSelect.appendChild(opt);
+    }
+    for (const p of customPresets) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.label;
+      presetSelect.appendChild(opt);
+    }
+    const newOpt = document.createElement("option");
+    newOpt.value = NEW_PRESET_VALUE;
+    newOpt.textContent = "+ New preset";
+    presetSelect.appendChild(newOpt);
+  }
+  rebuildPresetOptions();
+
+  if (currentPresetId) {
+    presetSelect.value = currentPresetId;
+  } else {
+    presetSelect.value = BUILT_IN_PRESETS[0].id;
+    currentPresetId = BUILT_IN_PRESETS[0].id;
+    currentPresetBuiltIn = true;
+  }
+
+  const saveBtn = root.querySelector("#tune-save-preset") as HTMLButtonElement;
+  const deleteBtn = root.querySelector("#tune-delete-preset") as HTMLButtonElement;
+
+  function getActivePresetResolved(): GameTuning {
+    if (currentPresetId === null) return getCurrentTuningSnapshot();
+    if (currentPresetBuiltIn) {
+      const p = BUILT_IN_PRESETS.find(bp => bp.id === currentPresetId);
+      return p ? resolvePresetValues(p, true) : { ..._builtinDefaults };
+    }
+    const cp = customPresets.find(p => p.id === currentPresetId);
+    return cp ? resolvePresetValues(cp, false) : { ..._builtinDefaults };
+  }
+
+  function isPresetDirty(): boolean {
+    if (currentPresetId === null) return true;
+    const resolved = getActivePresetResolved();
+    for (const key of Object.keys(resolved) as (keyof GameTuning)[]) {
+      if (tuning[key] !== resolved[key]) return true;
+    }
+    return false;
+  }
+
+  function updateDirtyState(): void {
+    const dirty = isPresetDirty();
+    saveBtn.textContent = dirty ? "Save preset *" : "Save preset";
+    saveBtn.classList.toggle("dirty", dirty);
+    deleteBtn.style.display = (!currentPresetBuiltIn && currentPresetId !== null) ? "" : "none";
+  }
+
+  function generateCustomName(baseName: string): string {
+    const existing = customPresets.map(p => p.label);
+    for (let i = 1; ; i++) {
+      const name = `${baseName} ${i}`;
+      if (!existing.includes(name)) return name;
+    }
+  }
+
+  function generateCustomId(): string {
+    return "custom_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   }
 
   presetSelect.addEventListener("change", () => {
+    const val = presetSelect.value;
     const prevMap = tuning.mapType;
-    applyPreset(presetSelect.value);
+
+    if (val === NEW_PRESET_VALUE) {
+      currentPresetId = null;
+      currentPresetBuiltIn = false;
+      setActivePresetId(null);
+      updateDirtyState();
+      return;
+    }
+
+    const builtIn = BUILT_IN_PRESETS.find(p => p.id === val);
+    if (builtIn) {
+      applyBuiltInPreset(val);
+      currentPresetId = val;
+      currentPresetBuiltIn = true;
+    } else {
+      const custom = customPresets.find(p => p.id === val);
+      if (custom) {
+        applyCustomPreset(custom);
+        currentPresetId = val;
+        currentPresetBuiltIn = false;
+      }
+    }
+
+    setActivePresetId(currentPresetId);
     syncUIFromTuning();
+    updateDirtyState();
     if (tuning.mapType !== prevMap) {
       for (const fn of mapChangeListeners) fn(tuning.mapType);
     }
@@ -502,11 +656,41 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   presetRow.appendChild(presetSelect);
   rowsEl.appendChild(presetRow);
 
+  // --- Per-mode visibility for gravity camera ---
+  let gravCamBody: HTMLElement | null = null;
+
+  function updateGravCamVisibility(): void {
+    if (!gravCamBody) return;
+    const mode = tuning.gravityCamera;
+    const isSpring = mode === "spring";
+    const target = tuning.gravCamTarget;
+    const gating = tuning.gravCamGating;
+
+    const visibility: Record<string, boolean> = {
+      gravCamTarget: isSpring,
+      gravCamGating: isSpring,
+      gravCamAirborneFallback: isSpring && target === "surface",
+      gravityRotSpeed: isSpring || mode === "smooth" || mode === "trajectory" || mode === "predictive",
+      gravCamVelGate: isSpring && (gating === "velocity" || gating === "velocity+deadzone"),
+      gravCamDeadZone: isSpring && gating === "velocity+deadzone",
+      gravCamDamping: mode === "damping",
+    };
+
+    const rows = gravCamBody.querySelectorAll<HTMLElement>("[data-tuning-key]");
+    for (const el of rows) {
+      const key = el.dataset.tuningKey!;
+      if (key in visibility) {
+        el.style.display = visibility[key] ? "" : "none";
+      }
+    }
+  }
+
   // --- Collapsible sections ---
-  const allDropdownInputs: { key: keyof GameTuning; select: HTMLSelectElement }[] = [];
+  const allDropdownInputs: { key: keyof GameTuning; select: HTMLSelectElement; hintEl?: HTMLElement; hints?: Record<string, string> }[] = [];
   function buildSliderRow(def: SliderDef, container: HTMLElement): void {
     const row = document.createElement("div");
     row.className = "tune-row";
+    row.dataset.tuningKey = def.key;
     const valSpan = document.createElement("span");
     valSpan.className = "tune-val";
     valueEls.set(def.key, valSpan);
@@ -535,6 +719,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       (tuning as unknown as Record<string, number>)[def.key] = val;
       valSpan.textContent = fmt(val);
       saveTuning();
+      updateDirtyState();
       if (def.key === "playerHeight") {
         player.snapToGround();
       }
@@ -561,6 +746,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     input.addEventListener("change", () => {
       (tuning as unknown as Record<string, boolean>)[def.key] = input.checked;
       saveTuning();
+      updateDirtyState();
     });
 
     row.appendChild(name);
@@ -592,6 +778,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       for (const dd of section.dropdowns) {
         const row = document.createElement("div");
         row.className = "tune-row";
+        row.dataset.tuningKey = dd.key;
         const label = document.createElement("label");
         const name = document.createElement("span");
         name.className = "tune-name";
@@ -606,15 +793,29 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
           sel.appendChild(opt);
         }
         sel.value = tuning[dd.key] as string;
+        let hintEl: HTMLElement | null = null;
+        if (dd.hints) {
+          hintEl = document.createElement("div");
+          hintEl.className = "tune-dropdown-hint";
+          hintEl.dataset.tuningKey = dd.key;
+          hintEl.textContent = dd.hints[sel.value] ?? "";
+        }
+
         sel.addEventListener("change", () => {
           (tuning as unknown as Record<string, string>)[dd.key] = sel.value;
           saveTuning();
+          updateDirtyState();
+          if (hintEl && dd.hints) {
+            hintEl.textContent = dd.hints[sel.value] ?? "";
+          }
+          updateGravCamVisibility();
         });
 
         row.appendChild(label);
         row.appendChild(sel);
         body.appendChild(row);
-        allDropdownInputs.push({ key: dd.key, select: sel });
+        if (hintEl) body.appendChild(hintEl);
+        allDropdownInputs.push({ key: dd.key, select: sel, hintEl: hintEl ?? undefined, hints: dd.hints });
       }
     }
     if (section.toggles) {
@@ -626,14 +827,23 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       buildSliderRow(def, body);
     }
 
+    if (section.id === "gravcam") {
+      gravCamBody = body;
+    }
+
     details.appendChild(body);
     rowsEl.appendChild(details);
   }
 
+  updateGravCamVisibility();
+
   function syncUIFromTuning(): void {
     mapSelect.value = tuning.mapType;
-    for (const { key, select } of allDropdownInputs) {
+    for (const { key, select, hintEl, hints } of allDropdownInputs) {
       select.value = tuning[key] as string;
+      if (hintEl && hints) {
+        hintEl.textContent = hints[select.value] ?? "";
+      }
     }
     for (const { def, input } of allSliderInputs) {
       const v = tuning[def.key] as number;
@@ -645,23 +855,74 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     for (const { def, input } of allToggleInputs) {
       input.checked = tuning[def.key] as boolean;
     }
+    updateGravCamVisibility();
   }
 
-  // --- Reset ---
-  root.querySelector("#tune-reset")!.addEventListener("click", () => {
+  // --- Save preset ---
+  saveBtn.addEventListener("click", () => {
+    const snapshot = getCurrentTuningSnapshot();
+
+    if (currentPresetBuiltIn && currentPresetId !== null) {
+      const builtIn = BUILT_IN_PRESETS.find(p => p.id === currentPresetId);
+      const baseName = builtIn ? builtIn.label : "Custom";
+      const newPreset: Preset = {
+        id: generateCustomId(),
+        label: generateCustomName(baseName),
+        values: snapshot,
+      };
+      customPresets.push(newPreset);
+      saveCustomPresets(customPresets);
+      currentPresetId = newPreset.id;
+      currentPresetBuiltIn = false;
+      setActivePresetId(currentPresetId);
+      rebuildPresetOptions();
+      presetSelect.value = currentPresetId;
+    } else if (currentPresetId === null) {
+      const newPreset: Preset = {
+        id: generateCustomId(),
+        label: generateCustomName("Custom"),
+        values: snapshot,
+      };
+      customPresets.push(newPreset);
+      saveCustomPresets(customPresets);
+      currentPresetId = newPreset.id;
+      currentPresetBuiltIn = false;
+      setActivePresetId(currentPresetId);
+      rebuildPresetOptions();
+      presetSelect.value = currentPresetId;
+    } else {
+      const idx = customPresets.findIndex(p => p.id === currentPresetId);
+      if (idx !== -1) {
+        customPresets[idx].values = snapshot;
+        saveCustomPresets(customPresets);
+      }
+    }
+    updateDirtyState();
+  });
+
+  // --- Delete preset ---
+  deleteBtn.addEventListener("click", () => {
+    if (currentPresetBuiltIn || currentPresetId === null) return;
+    customPresets = customPresets.filter(p => p.id !== currentPresetId);
+    saveCustomPresets(customPresets);
+    currentPresetId = BUILT_IN_PRESETS[0].id;
+    currentPresetBuiltIn = true;
+    setActivePresetId(currentPresetId);
+
     const prevMap = tuning.mapType;
-    resetTuning();
+    applyBuiltInPreset(currentPresetId);
+    rebuildPresetOptions();
+    presetSelect.value = currentPresetId;
     syncUIFromTuning();
+    updateDirtyState();
     if (tuning.mapType !== prevMap) {
       for (const fn of mapChangeListeners) fn(tuning.mapType);
     }
     player.snapToGround();
   });
 
-  // --- Save as defaults ---
-  root.querySelector("#tune-save-defaults")!.addEventListener("click", () => {
-    saveAsDefaults();
-  });
+  // Set initial dirty state
+  updateDirtyState();
 
   // Apply initial visibility from localStorage
   if (!panelVisible) {

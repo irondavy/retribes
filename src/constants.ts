@@ -1,17 +1,15 @@
 export type GravityCameraMode =
-  | "none"        // fully manual
-  | "smooth"      // slerp on flip
-  | "snap"        // instant on land
-  | "spring"      // continuous spring toward hard target up
-  | "blend"       // spring toward blended target up (smooth through transition)
-  | "velocity"    // spring only when near ground / low vertical speed
-  | "damping"     // damps roll rate instead of seeking a target
-  | "blend+vel"   // blend + velocity gating combined
-  | "surface"     // ground normal when grounded, gravity when airborne
-  | "hybrid"      // ground normal when grounded, blended when airborne
-  | "trajectory"  // up derived from non-gravitational forces (felt acceleration)
+  | "none"         // fully manual
+  | "smooth"       // slerp on flip
+  | "snap"         // instant on land
+  | "spring"       // parameterized spring correction (target/gating/fallback sub-options)
+  | "damping"      // damps roll rate instead of seeking a target
+  | "trajectory"   // up derived from non-gravitational forces (felt acceleration)
   | "horizon-lock" // hard roll lock to current gravity direction
-  | "predictive"; // anticipates gravity change based on trajectory
+  | "predictive";  // anticipates gravity change based on trajectory
+export type GravCamTarget = "gravity" | "blended" | "surface";
+export type GravCamGating = "none" | "velocity" | "velocity+deadzone";
+export type GravCamAirborneFallback = "gravity" | "blended" | "hold";
 export type MapType = "flat" | "sphere";
 export type GrappleMode = "winch" | "pendulum";
 
@@ -31,6 +29,9 @@ export interface GameTuning {
   skiSteerFactor: number;
   jetForwardBias: number;
   gravityCamera: GravityCameraMode;
+  gravCamTarget: GravCamTarget;
+  gravCamGating: GravCamGating;
+  gravCamAirborneFallback: GravCamAirborneFallback;
   gravityRotSpeed: number;
   gravCamDeadZone: number;
   gravCamVelGate: number;
@@ -113,6 +114,9 @@ export const _builtinDefaults: GameTuning = {
   skiSteerFactor: 0.08,
   jetForwardBias: 0.15,
   gravityCamera: "none",
+  gravCamTarget: "gravity",
+  gravCamGating: "none",
+  gravCamAirborneFallback: "gravity",
   gravityRotSpeed: 2.0,
   gravCamDeadZone: 15,
   gravCamVelGate: 8,
@@ -179,7 +183,8 @@ export const _builtinDefaults: GameTuning = {
 };
 
 const STORAGE_KEY = "retribes_tuning";
-const DEFAULTS_KEY = "retribes_customDefaults";
+const CUSTOM_PRESETS_KEY = "retribes_customPresets";
+const ACTIVE_PRESET_KEY = "retribes_activePreset";
 
 function loadFromStorage(key: string): Partial<GameTuning> {
   try {
@@ -189,10 +194,8 @@ function loadFromStorage(key: string): Partial<GameTuning> {
   return {};
 }
 
-export const tuningDefaults: GameTuning = { ..._builtinDefaults, ...loadFromStorage(DEFAULTS_KEY) };
-
 /** Live values — mutated by the tune panel at runtime. */
-export const tuning: GameTuning = { ...tuningDefaults, ...loadFromStorage(STORAGE_KEY) };
+export const tuning: GameTuning = { ..._builtinDefaults, ...loadFromStorage(STORAGE_KEY) };
 
 export function saveTuning(): void {
   try {
@@ -200,17 +203,43 @@ export function saveTuning(): void {
   } catch { /* storage full / blocked */ }
 }
 
-export function resetTuning(): void {
-  Object.assign(tuning, tuningDefaults);
-  try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
+export function loadCustomPresets(): Preset[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PRESETS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore corrupt data */ }
+  return [];
 }
 
-export function saveAsDefaults(): void {
-  Object.assign(tuningDefaults, tuning);
+export function saveCustomPresets(presets: Preset[]): void {
   try {
-    localStorage.setItem(DEFAULTS_KEY, JSON.stringify(tuningDefaults));
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.setItem(CUSTOM_PRESETS_KEY, JSON.stringify(presets));
   } catch { /* storage full / blocked */ }
+}
+
+export function getActivePresetId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_PRESET_KEY);
+  } catch { return null; }
+}
+
+export function setActivePresetId(id: string | null): void {
+  try {
+    if (id === null) localStorage.removeItem(ACTIVE_PRESET_KEY);
+    else localStorage.setItem(ACTIVE_PRESET_KEY, id);
+  } catch { /* noop */ }
+}
+
+export function getCurrentTuningSnapshot(): GameTuning {
+  return { ...tuning };
+}
+
+/** Resolve what a preset's full tuning state would be. */
+export function resolvePresetValues(preset: Preset, isBuiltIn: boolean): GameTuning {
+  if (isBuiltIn) {
+    return { ..._builtinDefaults, ...preset.values };
+  }
+  return preset.values as GameTuning;
 }
 
 export interface Preset {
@@ -219,15 +248,10 @@ export interface Preset {
   values: Partial<GameTuning>;
 }
 
-export const PRESETS: Preset[] = [
+export const BUILT_IN_PRESETS: Preset[] = [
   {
     id: "default",
     label: "Default",
-    values: {},
-  },
-  {
-    id: "tribes",
-    label: "Tribes purist",
     values: {
       enableSlopeFriction: true,
       enableLandingAngle: true,
@@ -235,109 +259,150 @@ export const PRESETS: Preset[] = [
       landingAnglePenalty: 1,
       skiGroundAdherence: 2,
       skiCamSmoothing: 0.5,
-      gravityCamera: "surface",
+      gravityCamera: "spring",
+      gravCamTarget: "surface",
+      gravCamAirborneFallback: "blended",
+      gravityRotSpeed: 1,
+      grappleSpeed: 300,
       jetRegenDelay: 0.4,
       airDrag: 0.15,
       slopeSpeedBonus: 1.5,
+      turnInertia: 0.35,
+      airControlSpeedReduction: 0.45,
+      landingRecoveryTime: 0.1,
     },
   },
   {
-    id: "momentum",
-    label: "Momentum",
+    id: "tribes",
+    label: "Tribes",
+    values: {
+      enableSlopeFriction: true,
+      enableLandingAngle: true,
+      landingAngleBoost: 1,
+      landingAnglePenalty: 1,
+      skiGroundAdherence: 2,
+      skiCamSmoothing: 0.5,
+      gravityCamera: "spring",
+      gravCamTarget: "surface",
+      gravCamAirborneFallback: "gravity",
+      jetRegenDelay: 0.4,
+      airDrag: 0.15,
+      slopeSpeedBonus: 1.5,
+      turnInertia: 0.35,
+      airControlSpeedReduction: 0.45,
+      landingRecoveryTime: 0.1,
+    },
+  },
+  {
+    id: "titanfall",
+    label: "Titanfall",
     values: {
       grappleMode: "pendulum",
+      grappleReelSpeed: 60,
+      grappleConnectBoost: 20,
+      grappleConnectUpBias: 12,
       grappleReleaseBoost: 10,
-      skiEntryBoost: 5,
+      grappleCameraPull: 0.5,
+      coyoteTime: 100,
+      enableJetKick: true,
+      enableSlopeFriction: true,
+      skiEntryBoost: 4,
+      chainBonusWindow: 2,
+      chainBonusMultiplier: 0.06,
+      airControlSpeedReduction: 0.35,
+      airDrag: 0.03,
+      turnInertia: 0.2,
       strafeRollAngle: 3,
       enableFovRateScaling: true,
       enableSpeedLines: true,
       speedLineIntensity: 0.7,
-      gravityCamera: "trajectory",
-      chainBonusWindow: 2,
-      chainBonusMultiplier: 0.08,
-      grappleCameraPull: 0.4,
-      airControlSpeedReduction: 0.5,
+      landingCameraDip: 1.0,
+      landingSquashFov: 1.0,
+      gravityCamera: "spring",
+      gravCamTarget: "gravity",
+      gravCamGating: "none",
+      gravityRotSpeed: 3.5,
     },
   },
   {
-    id: "weighted",
-    label: "Weighted",
+    id: "heavy",
+    label: "Heavy",
     values: {
-      coyoteTime: 100,
+      gravity: 28,
+      airDrag: 0.25,
+      turnInertia: 0.6,
+      airControlSpeedReduction: 0.6,
+      enableSlopeFriction: true,
+      enableLandingAngle: true,
+      landingAnglePenalty: 1.5,
+      skiGroundAdherence: 2.5,
+      landingRecoveryTime: 0.2,
+      jetThrust: 32,
+      jetStartupTime: 0.06,
       enableJetKick: true,
-      landingSquashFov: 2,
-      landingRecoveryTime: 0.15,
+      jetRegenDelay: 0.6,
+      impactShakeIntensity: 2,
+      impactFovPunch: 2,
+      impactVignette: 2,
+      landingSquashFov: 3,
+      landingCameraDip: 2.5,
       slopeTiltIntensity: 2,
-      impactShakeIntensity: 1.5,
-      impactFovPunch: 1.5,
-      impactVignette: 1.5,
-      landingCameraDip: 2,
-      turnInertia: 0.5,
-      jetStartupTime: 0.04,
+      skiCamSmoothing: 0.6,
+      gravityCamera: "spring",
+      gravCamTarget: "gravity",
     },
   },
   {
-    id: "full-juice",
-    label: "Full juice",
+    id: "frictionless",
+    label: "Frictionless",
     values: {
+      skiFriction: 0.0002,
+      airDrag: 0,
+      turnInertia: 0,
+      landingRecoveryTime: 0,
+      airControlSpeedReduction: 0,
+      skiEntryBoost: 6,
+      grappleReleaseBoost: 12,
+      chainBonusWindow: 3,
+      chainBonusMultiplier: 0.08,
       grappleMode: "pendulum",
-      grappleReleaseBoost: 10,
-      skiEntryBoost: 5,
-      strafeRollAngle: 3,
-      enableFovRateScaling: true,
       enableSpeedLines: true,
-      speedLineIntensity: 0.7,
+      speedLineIntensity: 0.9,
+      enableFovRateScaling: true,
+      strafeRollAngle: 4,
       gravityCamera: "trajectory",
-      coyoteTime: 100,
-      enableJetKick: true,
-      landingSquashFov: 2,
-      landingRecoveryTime: 0.15,
-      slopeTiltIntensity: 2,
-      impactShakeIntensity: 1.5,
-      impactFovPunch: 1.5,
-      impactVignette: 1.5,
-      enableSlopeFriction: true,
-      enableLandingAngle: true,
-      skiGroundAdherence: 1.5,
-      skiCamSmoothing: 0.3,
-      chainBonusWindow: 2,
-      chainBonusMultiplier: 0.08,
-      grappleCameraPull: 0.4,
-      landingCameraDip: 1.5,
-      turnInertia: 0.3,
-      slopeSpeedBonus: 1,
-      airDrag: 0.05,
     },
   },
   {
-    id: "competitive",
-    label: "Clean competitive",
+    id: "clean",
+    label: "Clean",
     values: {
-      coyoteTime: 80,
       enableSlopeFriction: true,
       enableLandingAngle: true,
+      landingAngleBoost: 1,
+      landingAnglePenalty: 1,
       skiGroundAdherence: 1.5,
-      grappleReleaseBoost: 5,
-      gravityCamera: "horizon-lock",
-      jetRegenDelay: 0.3,
+      slopeSpeedBonus: 0.8,
       airDrag: 0.1,
+      turnInertia: 0.25,
       airControlSpeedReduction: 0.4,
+      landingRecoveryTime: 0.08,
+      jetRegenDelay: 0.3,
+      skiCamSmoothing: 0.4,
+      coyoteTime: 80,
+      gravityCamera: "horizon-lock",
     },
-  },
-  {
-    id: "custom",
-    label: "Custom defaults",
-    values: {},
   },
 ];
 
-export function applyPreset(id: string): void {
-  if (id === "custom") {
-    Object.assign(tuning, tuningDefaults);
-  } else {
-    const preset = PRESETS.find(p => p.id === id);
-    if (!preset) return;
-    Object.assign(tuning, _builtinDefaults, preset.values);
-  }
+export function applyBuiltInPreset(id: string): void {
+  const preset = BUILT_IN_PRESETS.find(p => p.id === id);
+  if (!preset) return;
+  Object.assign(tuning, _builtinDefaults, preset.values);
+  saveTuning();
+}
+
+export function applyCustomPreset(preset: Preset): void {
+  Object.assign(tuning, preset.values);
   saveTuning();
 }

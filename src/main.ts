@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { InputState } from "./input";
 import { PlayerController } from "./player";
 import { createTerrain, randomSpawn, type TerrainResult } from "./terrain";
@@ -9,6 +10,10 @@ import type { MapType } from "./constants";
 import { VisualSystem } from "./visuals";
 import { NetworkManager } from "./network";
 import { RemotePlayerManager } from "./remotePlayers";
+
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -58,11 +63,21 @@ currentTerrain.ceilingMeshes.visible = tuning.enableCeiling;
 const input = new InputState();
 const player = new PlayerController(camera);
 
+function buildBVH(t: TerrainResult): void {
+  t.group.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (mesh.isMesh && mesh.geometry) {
+      mesh.geometry.computeBoundsTree();
+    }
+  });
+}
+
 function wirePlayerTerrain(t: TerrainResult): void {
   player.setTerrain(
     t.groundMeshes,
     t.ceilingMeshes,
     t.structureMeshes,
+    t.structureBounds,
     t.mirrorY,
     t.mapType,
     t.sphereCenter,
@@ -70,6 +85,7 @@ function wirePlayerTerrain(t: TerrainResult): void {
   );
 }
 
+buildBVH(currentTerrain);
 wirePlayerTerrain(currentTerrain);
 
 let prevEnableMarkers = tuning.enableMarkers;
@@ -109,6 +125,7 @@ function switchMap(mapType: MapType): void {
   scene.remove(currentTerrain.group);
   currentTerrain = createTerrain(mapType);
   scene.add(currentTerrain.group);
+  buildBVH(currentTerrain);
   wirePlayerTerrain(currentTerrain);
   visuals.setTerrainMaterials(currentTerrain.groundMaterial, currentTerrain.ceilingMaterial);
   currentTerrain.markerGroup.visible = tuning.enableMarkers;

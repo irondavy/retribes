@@ -304,12 +304,6 @@ export class VisualSystem {
       squashFov = this.landingSquashAmount * Math.sin(t * Math.PI);
     }
 
-    const finalFov = this.currentFov + squashFov;
-    if (Math.abs(this.camera.fov - finalFov) > 0.01) {
-      this.camera.fov = finalFov;
-      this.camera.updateProjectionMatrix();
-    }
-
     // Impact feedback — screen shake + FOV punch
     const impactForce = player.lastImpact;
     if (impactForce > tuning.impactThreshold) {
@@ -318,6 +312,7 @@ export class VisualSystem {
       this.impactTimer = 0.35;
       this.impactFovKick = normalized * 8 * tuning.impactFovPunch;
     }
+    let fovKick = 0;
     if (this.impactTimer > 0) {
       this.impactTimer -= dt;
       const t = Math.max(0, this.impactTimer / 0.35);
@@ -328,12 +323,15 @@ export class VisualSystem {
         (Math.random() - 0.5) * 1 * shakeAmp,
       );
       this.camera.position.add(this.impactOffset);
-
-      const fovKick = this.impactFovKick * t;
-      this.camera.fov = this.currentFov + squashFov - fovKick;
-      this.camera.updateProjectionMatrix();
+      fovKick = this.impactFovKick * t;
     } else {
       this._impactIntensity = 0;
+    }
+
+    const finalFov = this.currentFov + squashFov - fovKick;
+    if (Math.abs(this.camera.fov - finalFov) > 0.01) {
+      this.camera.fov = finalFov;
+      this.camera.updateProjectionMatrix();
     }
 
     // Landing camera dip

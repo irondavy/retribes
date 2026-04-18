@@ -11,12 +11,17 @@ export interface SpawnPoint {
   facingAngle: number;
 }
 
+export interface StructureBounds {
+  x: number; y: number; z: number; radius: number;
+}
+
 export interface TerrainResult {
   group: THREE.Group;
   groundMeshes: THREE.Group;
   ceilingMeshes: THREE.Group;
   /** Floating obstacles — used for grapple and body collision, but NOT ground-sampling raycasts. */
   structureMeshes: THREE.Group;
+  structureBounds: StructureBounds[];
   markerGroup: THREE.Group;
   mirrorY: number;
   mapType: MapType;
@@ -722,8 +727,9 @@ function scatterCeilingMarkers(markerGroup: THREE.Group, mirrorY: number): void 
   }
 }
 
-function createFloatingStructures(mirrorY: number): THREE.Group {
+function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds: StructureBounds[] } {
   const structGroup = new THREE.Group();
+  const bounds: StructureBounds[] = [];
   const midY = mirrorY / 2;
   const floorClearance = 140; // stay above tallest terrain peaks
   const ceilClearance = 140;  // stay below ceiling terrain
@@ -790,6 +796,7 @@ function createFloatingStructures(mirrorY: number): THREE.Group {
       _s.set(w, h, d);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(i, _m);
+      bounds.push({ x: s.x, y: s.y, z: s.z, radius: Math.max(w, d) * 0.5 + h * 0.5 });
     }
     im.instanceMatrix.needsUpdate = true;
     im.receiveShadow = true;
@@ -821,6 +828,7 @@ function createFloatingStructures(mirrorY: number): THREE.Group {
       _s.setScalar(scale);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(i, _m);
+      bounds.push({ x: s.x, y: s.y, z: s.z, radius: scale * 1.15 });
     }
     im.instanceMatrix.needsUpdate = true;
     im.castShadow = true;
@@ -847,13 +855,14 @@ function createFloatingStructures(mirrorY: number): THREE.Group {
       _s.set(radius, height, radius);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(i, _m);
+      bounds.push({ x: s.x, y: s.y, z: s.z, radius: Math.max(radius, height * 0.5) + radius });
     }
     im.instanceMatrix.needsUpdate = true;
     im.castShadow = true;
     structGroup.add(im);
   }
 
-  return structGroup;
+  return { group: structGroup, bounds };
 }
 
 export function createFlatTerrain(): TerrainResult {
@@ -933,7 +942,9 @@ export function createFlatTerrain(): TerrainResult {
   ceilingMeshes.add(mirrorMesh);
   group.add(ceilingMeshes);
 
-  const structureMeshes = createFloatingStructures(mirrorY);
+  const floatingResult = createFloatingStructures(mirrorY);
+  const structureMeshes = floatingResult.group;
+  const structureBounds = floatingResult.bounds;
   group.add(structureMeshes);
 
   const markerGroup = new THREE.Group();
@@ -942,7 +953,7 @@ export function createFlatTerrain(): TerrainResult {
   group.add(markerGroup);
 
   return {
-    group, groundMeshes, ceilingMeshes, structureMeshes, markerGroup, mirrorY, mapType: "flat",
+    group, groundMeshes, ceilingMeshes, structureMeshes, structureBounds, markerGroup, mirrorY, mapType: "flat",
     spawnPoints: FLAT_SPAWN_POINTS, groundMaterial: mat, ceilingMaterial: mirrorMat,
   };
 }
@@ -1181,6 +1192,7 @@ export function createSphereTerrain(): TerrainResult {
     groundMeshes,
     ceilingMeshes,
     structureMeshes: new THREE.Group(),
+    structureBounds: [],
     markerGroup,
     mirrorY: 0,
     mapType: "sphere",

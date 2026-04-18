@@ -16,6 +16,7 @@
     "partysocket": "^1.1.16",
     "serve": "^14.2.6",
     "three": "^0.183.2",
+    "three-mesh-bvh": "^0.9.9",
     "typescript": "^6.0.2",
     "vite": "^8.0.8"
   }

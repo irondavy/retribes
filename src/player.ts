@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { InputState } from "./input";
 import { tuning } from "./constants";
-import type { MapType } from "./terrain";
+import type { MapType, StructureBounds } from "./terrain";
 
 const RAY_ORIGIN_OFFSET = 500;
 const GRAVITY_BLEND_ZONE = 50;
@@ -83,12 +83,13 @@ export class PlayerController {
   private readonly prevVelocity = new THREE.Vector3();
   private readonly feltUp = new THREE.Vector3(0, 1, 0);
 
-  private readonly raycaster = new THREE.Raycaster();
+  private readonly raycaster = (() => { const r = new THREE.Raycaster(); (r as unknown as Record<string, boolean>).firstHitOnly = true; return r; })();
   private readonly rayOrigin = new THREE.Vector3();
 
   private floorMeshes: THREE.Object3D[] = [];
   private ceilingMeshes: THREE.Object3D[] = [];
   private structureMeshes: THREE.Object3D[] = [];
+  private structBounds: StructureBounds[] = [];
 
   // Pre-allocated temporaries — never allocate in per-frame methods
   private readonly _gravDir = new THREE.Vector3();
@@ -114,6 +115,7 @@ export class PlayerController {
     floorGroup: THREE.Group,
     ceilingGroup: THREE.Group,
     structureGroup: THREE.Group,
+    structureBounds: StructureBounds[],
     mirrorY: number,
     mapType: MapType = "flat",
     sphereCenter?: THREE.Vector3,
@@ -121,6 +123,7 @@ export class PlayerController {
   ): void {
     this.mirrorY = mirrorY;
     this.mapType = mapType;
+    this.structBounds = structureBounds;
     if (sphereCenter) this.sphereCenter.copy(sphereCenter);
     if (sphereRadius !== undefined) this.sphereRadius = sphereRadius;
 
@@ -313,9 +316,10 @@ export class PlayerController {
         Math.min(1, this.speed / 30);
       const camFwd = this._tv0.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
       const currentUp = this._tv1.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      const worldUp = this._tv3.set(0, 1, 0);
       const currentRoll = Math.atan2(
-        currentUp.dot(this._tv2.crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize()),
-        currentUp.dot(new THREE.Vector3(0, 1, 0)),
+        currentUp.dot(this._tv2.crossVectors(camFwd, worldUp).normalize()),
+        currentUp.dot(worldUp),
       );
       const rollDiff = targetRoll - currentRoll;
       if (Math.abs(rollDiff) > 0.001) {
@@ -388,7 +392,9 @@ export class PlayerController {
         if (this.chainTimer > 0) {
           this.chainCount++;
           const bonus = 1 + this.chainCount * tuning.chainBonusMultiplier;
+          const savedY = this.velocity.y;
           this.velocity.multiplyScalar(bonus);
+          this.velocity.y = savedY;
         } else {
           this.chainCount = 1;
         }
@@ -575,7 +581,9 @@ export class PlayerController {
       this.grappleTraveling = false;
     }
 
-    this.updateGrappleProjectile(dt, this.floorMeshes, grappleRange, grapplePull, grappleSwingDamping);
+    if (this.grappleTraveling || this.grappleAttached) {
+      this.updateGrappleProjectile(dt, this.floorMeshes, grappleRange, grapplePull, grappleSwingDamping);
+    }
 
     this.position.addScaledVector(this.velocity, dt);
 
@@ -868,11 +876,27 @@ export class PlayerController {
       this.grappleTraveling = false;
     }
 
-    this._allMeshes.length = 0;
-    for (let i = 0; i < this.floorMeshes.length; i++) this._allMeshes.push(this.floorMeshes[i]);
-    for (let i = 0; i < this.ceilingMeshes.length; i++) this._allMeshes.push(this.ceilingMeshes[i]);
-    for (let i = 0; i < this.structureMeshes.length; i++) this._allMeshes.push(this.structureMeshes[i]);
-    this.updateGrappleProjectile(dt, this._allMeshes, grappleRange, grapplePull, grappleSwingDamping);
+    if (this.grappleTraveling || this.grappleAttached) {
+      this._allMeshes.length = 0;
+      for (let i = 0; i < this.floorMeshes.length; i++) this._allMeshes.push(this.floorMeshes[i]);
+      for (let i = 0; i < this.ceilingMeshes.length; i++) this._allMeshes.push(this.ceilingMeshes[i]);
+      if (this.grappleTraveling && this.structureMeshes.length > 0) {
+        const hookPos = this.grappleHookPos;
+        const step = tuning.grappleSpeed * dt;
+        let nearStructure = false;
+        for (let i = 0; i < this.structBounds.length; i++) {
+          const b = this.structBounds[i];
+          const dx = hookPos.x - b.x, dy = hookPos.y - b.y, dz = hookPos.z - b.z;
+          const distSq = dx * dx + dy * dy + dz * dz;
+          const reach = b.radius + step;
+          if (distSq < reach * reach) { nearStructure = true; break; }
+        }
+        if (nearStructure) {
+          for (let i = 0; i < this.structureMeshes.length; i++) this._allMeshes.push(this.structureMeshes[i]);
+        }
+      }
+      this.updateGrappleProjectile(dt, this._allMeshes, grappleRange, grapplePull, grappleSwingDamping);
+    }
 
     this.position.addScaledVector(this.velocity, dt);
 
@@ -991,22 +1015,27 @@ export class PlayerController {
 
     if (alignment > 0.1) {
       const factor = 1 + alignment * downhillLen * 2 * tuning.landingAngleBoost;
+      const savedY = this.velocity.y;
       this.velocity.multiplyScalar(factor);
+      this.velocity.y = savedY;
     } else if (alignment < -0.1) {
       const factor = 1 + alignment * downhillLen * 2 * tuning.landingAnglePenalty;
+      const savedY = this.velocity.y;
       this.velocity.multiplyScalar(Math.max(0.3, factor));
+      this.velocity.y = savedY;
     }
   }
+
+  private static readonly PROBE_DIRS: [number, number, number][] = [
+    [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+  ];
 
   private resolveStructureCollision(playerHeight: number): void {
     const probeRadius = playerHeight;
     const savedFar = this.raycaster.far;
-    const dirs = [
-      this._tv4.set(1, 0, 0), this._tv5.set(-1, 0, 0),
-      this._tv6.set(0, 1, 0), this._tv7.set(0, -1, 0),
-      this._tv0.set(0, 0, 1), this._tv1.set(0, 0, -1),
-    ];
-    for (const dir of dirs) {
+    const probeDir = this._tv4;
+    for (const [dx, dy, dz] of PlayerController.PROBE_DIRS) {
+      const dir = probeDir.set(dx, dy, dz);
       this.raycaster.set(this.position, dir);
       this.raycaster.far = probeRadius;
       const hits = this.raycaster.intersectObjects(this.structureMeshes, false);
@@ -1209,37 +1238,46 @@ export class PlayerController {
         this.pendingFlip = false;
       }
     } else if (mode === "spring") {
-      this.applySpringRoll(dt, hardTargetUp, speed);
-    } else if (mode === "blend") {
-      if (blendedLen > 0.05) {
-        const target = this._tv4.divideScalar(blendedLen);
-        this.applySpringRoll(dt, target, speed * blendedLen);
+      const camTarget = tuning.gravCamTarget;
+      const gating = tuning.gravCamGating;
+      const fallback = tuning.gravCamAirborneFallback;
+
+      let targetVec: THREE.Vector3 | null = null;
+      let strengthMult = 1;
+
+      if (camTarget === "surface") {
+        if (this.grounded) {
+          targetVec = this.groundNormal;
+          strengthMult = 2;
+        } else if (fallback === "hold") {
+          targetVec = null;
+        } else if (fallback === "blended" && blendedLen > 0.05) {
+          targetVec = this._tv4.divideScalar(blendedLen);
+          strengthMult = blendedLen;
+        } else {
+          targetVec = hardTargetUp;
+          strengthMult = 0.5;
+        }
+      } else if (camTarget === "blended") {
+        if (blendedLen > 0.05) {
+          targetVec = this._tv4.divideScalar(blendedLen);
+          strengthMult = blendedLen;
+        }
+      } else {
+        targetVec = hardTargetUp;
       }
-    } else if (mode === "velocity") {
-      if (velGateFactor > 0.01) {
-        this.applySpringRoll(dt, hardTargetUp, speed * velGateFactor);
+
+      if (gating === "velocity") {
+        strengthMult *= velGateFactor;
+      } else if (gating === "velocity+deadzone") {
+        strengthMult *= velGateFactor * deadZoneFactor;
+      }
+
+      if (targetVec && strengthMult > 0.01) {
+        this.applySpringRoll(dt, targetVec, speed * strengthMult);
       }
     } else if (mode === "damping") {
       this.applyRollDamping(dt);
-    } else if (mode === "blend+vel") {
-      const effectiveStrength = blendedLen * velGateFactor * deadZoneFactor;
-      if (blendedLen > 0.05 && effectiveStrength > 0.01) {
-        const target = this._tv4.divideScalar(blendedLen);
-        this.applySpringRoll(dt, target, speed * effectiveStrength);
-      }
-    } else if (mode === "surface") {
-      if (this.grounded) {
-        this.applySpringRoll(dt, this.groundNormal, speed * 2);
-      } else {
-        this.applySpringRoll(dt, hardTargetUp, speed * 0.5);
-      }
-    } else if (mode === "hybrid") {
-      if (this.grounded) {
-        this.applySpringRoll(dt, this.groundNormal, speed * 2);
-      } else if (blendedLen > 0.05) {
-        const target = this._tv4.divideScalar(blendedLen);
-        this.applySpringRoll(dt, target, speed * blendedLen);
-      }
     } else if (mode === "trajectory") {
       this.applyTrajectoryCamera(dt, hardTargetUp, speed);
     } else if (mode === "horizon-lock") {
@@ -1268,7 +1306,13 @@ export class PlayerController {
 
     const dot = Math.max(-1, Math.min(1, currentUpProj.dot(targetUpProj)));
     const cross = this._upDir.crossVectors(currentUpProj, targetUpProj);
-    const angleSigned = Math.atan2(cross.dot(camForward), dot);
+    let angleSigned = Math.atan2(cross.dot(camForward), dot);
+
+    // Break anti-parallel degeneracy: when nearly 180° apart, the cross product
+    // vanishes and atan2 returns ~0. Force a consistent rotation direction.
+    if (dot < -0.99 && Math.abs(angleSigned) < 0.01) {
+      angleSigned = Math.PI;
+    }
 
     const correction = angleSigned * Math.min(1, strength * dt);
     if (Math.abs(correction) > 0.0001) {
