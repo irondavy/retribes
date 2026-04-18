@@ -424,7 +424,8 @@ export class PlayerController {
       skiSteerFactor, jetForwardBias, grappleRange, grapplePull, grappleSwingDamping,
     } = tuning;
 
-    const { dx, dy } = input.consumeMouse();
+    const { dx, dy: rawDy } = input.consumeMouse();
+    const dy = tuning.invertY ? -rawDy : rawDy;
 
     const towardCenter = this._tv0.subVectors(this.sphereCenter, this.position).normalize();
     const outward = this._tv1.copy(towardCenter).negate();
@@ -722,7 +723,8 @@ export class PlayerController {
       grappleRange, grapplePull, grappleSwingDamping,
     } = tuning;
 
-    const { dx, dy } = input.consumeMouse();
+    const { dx, dy: rawDy } = input.consumeMouse();
+    const dy = tuning.invertY ? -rawDy : rawDy;
 
     const camUp = this._tv0.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
     this.quatYaw.setFromAxisAngle(camUp, -dx * mouseSensitivity);

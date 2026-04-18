@@ -25,6 +25,7 @@ export interface GameTuning {
   playerHeight: number;
   walkSpeed: number;
   mouseSensitivity: number;
+  invertY: boolean;
   groundSnapThreshold: number;
   skiSteerFactor: number;
   jetForwardBias: number;
@@ -112,9 +113,10 @@ export const _builtinDefaults: GameTuning = {
   jetEnergyDrain: 25,
   jetEnergyRegen: 15,
   airControl: 0.02,
-  playerHeight: 10,
+  playerHeight: 1.8,
   walkSpeed: 12,
   mouseSensitivity: 0.002,
+  invertY: false,
   groundSnapThreshold: 0.5,
   skiSteerFactor: 0.08,
   jetForwardBias: 0.15,
@@ -263,23 +265,50 @@ export const BUILT_IN_PRESETS: Preset[] = [
     id: "default",
     label: "Default",
     values: {
+      // Skiing focus
       enableSlopeFriction: true,
       enableLandingAngle: true,
       landingAngleBoost: 1,
       landingAnglePenalty: 1,
       skiGroundAdherence: 2,
       skiCamSmoothing: 0.5,
+      slopeSpeedBonus: 1.5,
+      // Gravity camera
       gravityCamera: "spring",
       gravCamTarget: "surface",
       gravCamAirborneFallback: "blended",
       gravityRotSpeed: 1,
-      grappleSpeed: 300,
+      // Grapple (from Titanfall)
+      grappleMode: "pendulum",
+      grappleReelSpeed: 60,
+      grappleConnectBoost: 20,
+      grappleConnectUpBias: 12,
+      grappleReleaseBoost: 10,
+      grappleCameraPull: 0.5,
+      // Air movement (from Titanfall)
+      airControlSpeedReduction: 0.35,
+      airDrag: 0.03,
+      turnInertia: 0.2,
+      // Momentum / jet (from Titanfall)
+      coyoteTime: 100,
+      enableJetKick: true,
+      skiEntryBoost: 4,
+      chainBonusWindow: 2,
+      chainBonusMultiplier: 0.01,
       jetRegenDelay: 0.4,
-      airDrag: 0.15,
-      slopeSpeedBonus: 1.5,
-      turnInertia: 0.35,
-      airControlSpeedReduction: 0.45,
+      // Camera / feel (from Titanfall)
+      strafeRollAngle: 3,
+      enableFovRateScaling: true,
+      enableSpeedLines: true,
+      speedLineIntensity: 0.7,
+      landingCameraDip: 1.0,
+      landingSquashFov: 1.0,
       landingRecoveryTime: 0.1,
+      // Player / visuals
+      playerHeight: 1.8,
+      enableSkyGradient: false,
+      fogNear: 20,
+      fogFar: 1500,
     },
   },
   {

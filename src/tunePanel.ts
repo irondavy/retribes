@@ -56,6 +56,7 @@ const TIPS: Partial<Record<keyof GameTuning, string>> = {
   playerHeight: "Camera eye height above ground in meters.",
   groundSnapThreshold: "Max distance to snap the player down to the ground each frame.",
   mouseSensitivity: "Camera rotation speed per mouse pixel.",
+  invertY: "Invert the vertical mouse axis (pull down to look up).",
   gravityCamera: "How the camera corrects its roll when gravity changes direction.",
   gravCamTarget: "What the spring camera tries to align 'up' toward.",
   gravCamGating: "Whether the spring strength scales with player speed.",
@@ -297,6 +298,9 @@ const SECTIONS: Section[] = [
     id: "camera",
     title: "Camera",
     open: false,
+    toggles: [
+      { key: "invertY", label: "Invert Y axis" },
+    ],
     dropdowns: [
       { key: "gravityCamera", label: "Gravity mode", options: CAMERA_MODES, hints: CAMERA_MODE_HINTS },
       { key: "gravCamTarget", label: "Target", options: SPRING_TARGETS },
