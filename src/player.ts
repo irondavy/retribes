@@ -61,6 +61,15 @@ export class PlayerController {
   private grappleDistTraveled = 0;
   private grappleWasAirborne = false;
 
+  // Mantle state
+  private mantling = false;
+  private mantleTimer = 0;
+  private mantleDuration = 0;
+  private readonly mantleStartPos = new THREE.Vector3();
+  private readonly mantleMidPos = new THREE.Vector3();
+  private readonly mantleEndPos = new THREE.Vector3();
+  private readonly mantleExitVel = new THREE.Vector3();
+
   private readonly quatYaw = new THREE.Quaternion();
   private readonly quatPitch = new THREE.Quaternion();
   private readonly yawAxis = new THREE.Vector3(0, 1, 0);
@@ -699,6 +708,13 @@ export class PlayerController {
   private readonly _allMeshes: THREE.Object3D[] = [];
 
   private updateFlat(dt: number, input: InputState): void {
+    // During a mantle, suppress all normal physics — just animate the path
+    if (this.mantling) {
+      input.consumeMouse(); // drain mouse delta so it doesn't accumulate
+      this.updateMantle(dt);
+      return;
+    }
+
     const {
       gravity, skiFriction, groundFriction, jetThrust, jetEnergyDrain,
       jetEnergyRegen, airControl, playerHeight, walkSpeed, mouseSensitivity,
@@ -992,6 +1008,11 @@ export class PlayerController {
         }
         this.raycaster.far = savedFar;
       }
+
+      // Try to mantle if airborne and near a structure edge
+      if (!this.grounded) {
+        this.tryMantle(gravSign, playerHeight);
+      }
     }
 
     this.camera.position.copy(this.position);
@@ -1056,6 +1077,124 @@ export class PlayerController {
       }
     }
     this.raycaster.far = savedFar;
+  }
+
+  /**
+   * Try to initiate a mantle onto a structure edge.
+   * Detection: cast a horizontal ray in movement direction to find a wall,
+   * then cast downward from above the wall hit to see if there's a top edge
+   * within mantleReach. "Up" is velocity-primary, gravity-fallback.
+   */
+  private tryMantle(gravSign: number, playerHeight: number): boolean {
+    if (!tuning.enableMantle || this.grounded || this.mantling) return false;
+    if (this.grappleAttached || this.grappleTraveling) return false;
+    if (this.structureMeshes.length === 0) return false;
+
+    const hSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+
+    // Determine "up" direction: use velocity if moving meaningfully upward, else gravity
+    const upDir = this._tv5;
+    const velUp = this.velocity.y * gravSign; // positive = moving "up" in local gravity
+    if (velUp > 2) {
+      upDir.copy(this.velocity).normalize();
+      // Bias toward pure vertical to keep mantle clean
+      upDir.x *= 0.3;
+      upDir.z *= 0.3;
+      upDir.normalize();
+    } else {
+      upDir.set(0, gravSign, 0);
+    }
+
+    // Horizontal movement direction
+    const moveDir = this._tv6;
+    if (hSpeed > 1) {
+      moveDir.set(this.velocity.x, 0, this.velocity.z).normalize();
+    } else {
+      moveDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      moveDir.y = 0;
+      if (moveDir.lengthSq() > 0.001) moveDir.normalize();
+      else return false;
+    }
+
+    const reach = tuning.mantleReach;
+    const savedFar = this.raycaster.far;
+
+    // Step 1: Cast horizontal ray to find a wall
+    this.raycaster.set(this.position, moveDir);
+    this.raycaster.far = reach * 1.5;
+    const wallHits = this.raycaster.intersectObjects(this.structureMeshes, false);
+    if (wallHits.length === 0) { this.raycaster.far = savedFar; return false; }
+
+    const wallHit = wallHits[0];
+    const wallDist = wallHit.distance;
+    if (wallDist > reach * 1.5) { this.raycaster.far = savedFar; return false; }
+
+    // Step 2: Cast downward from above the wall hit point to find the top edge
+    const probeOrigin = this._tv7;
+    probeOrigin.copy(wallHit.point).addScaledVector(upDir, reach);
+    // Also nudge forward slightly past the wall surface
+    probeOrigin.addScaledVector(moveDir, 0.3);
+
+    const downDir = this._tv8.copy(upDir).negate();
+    this.raycaster.set(probeOrigin, downDir);
+    this.raycaster.far = reach * 2;
+    const topHits = this.raycaster.intersectObjects(this.structureMeshes, false);
+    if (topHits.length === 0) { this.raycaster.far = savedFar; return false; }
+
+    const topHit = topHits[0];
+    const edgePoint = topHit.point;
+
+    // Check that the edge is actually above us (in local "up" direction)
+    const heightAbove = this._tv7.copy(edgePoint).sub(this.position).dot(upDir);
+    if (heightAbove < 0.5 || heightAbove > reach) {
+      this.raycaster.far = savedFar;
+      return false;
+    }
+
+    // Step 3: Initiate mantle — compute path: current pos → up to edge → forward over edge
+    this.mantling = true;
+    this.mantleStartPos.copy(this.position);
+    this.mantleMidPos.copy(edgePoint).addScaledVector(upDir, playerHeight + 0.5);
+    this.mantleEndPos.copy(this.mantleMidPos).addScaledVector(moveDir, playerHeight + 1);
+
+    const pathLen = this.mantleStartPos.distanceTo(this.mantleMidPos)
+                  + this.mantleMidPos.distanceTo(this.mantleEndPos);
+    this.mantleDuration = pathLen / tuning.mantleSpeed;
+    this.mantleTimer = 0;
+
+    // Preserve a fraction of momentum as exit velocity
+    const preserve = tuning.mantleMomentumPreserve;
+    this.mantleExitVel.copy(moveDir).multiplyScalar(hSpeed * preserve);
+    this.mantleExitVel.addScaledVector(upDir, Math.max(0, velUp * preserve * 0.5));
+
+    this.velocity.set(0, 0, 0);
+    this.raycaster.far = savedFar;
+    return true;
+  }
+
+  /** Advance the mantle animation, moving the player along the path. */
+  private updateMantle(dt: number): void {
+    this.mantleTimer += dt;
+    let t = Math.min(1, this.mantleTimer / this.mantleDuration);
+    // Smooth ease-in-out
+    t = t * t * (3 - 2 * t);
+
+    if (t < 0.5) {
+      // First half: start → mid (going up)
+      const segT = t * 2;
+      this.position.lerpVectors(this.mantleStartPos, this.mantleMidPos, segT);
+    } else {
+      // Second half: mid → end (going over)
+      const segT = (t - 0.5) * 2;
+      this.position.lerpVectors(this.mantleMidPos, this.mantleEndPos, segT);
+    }
+
+    this.camera.position.copy(this.position);
+
+    if (this.mantleTimer >= this.mantleDuration) {
+      this.mantling = false;
+      this.velocity.copy(this.mantleExitVel);
+    }
   }
 
   private updateGrappleProjectile(

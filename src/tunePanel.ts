@@ -123,6 +123,10 @@ const TIPS: Partial<Record<keyof GameTuning, string>> = {
   fogNear: "Distance where fog starts to appear.",
   fogFar: "Distance where fog fully obscures objects.",
   cameraFar: "Max render distance. Lower = better performance, less visible terrain.",
+  enableMantle: "Auto-mantle onto structure edges when airborne and close enough.",
+  mantleReach: "Max height above player that a ledge can be to trigger a mantle.",
+  mantleSpeed: "How fast the mantle animation plays (m/s along the path).",
+  mantleMomentumPreserve: "Fraction of horizontal speed kept after mantling (0 = stop, 1 = full).",
 };
 
 const SECTION_STATE_KEY = "retribes_sectionState";
@@ -200,6 +204,9 @@ const SECTIONS: Section[] = [
     id: "physics",
     title: "Physics",
     open: true,
+    toggles: [
+      { key: "enableMantle", label: "Edge mantling" },
+    ],
     sliders: [
       { key: "gravity", label: "Gravity", min: 5, max: 50, step: 0.5 },
       { key: "walkSpeed", label: "Walk speed", min: 4, max: 30, step: 0.5 },
@@ -211,6 +218,9 @@ const SECTIONS: Section[] = [
       { key: "airDrag", label: "Air drag", min: 0, max: 0.5, step: 0.01, format: (v: number) => v.toFixed(2) },
       { key: "airControlSpeedReduction", label: "Air ctrl speed decay", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
       { key: "turnInertia", label: "Turn inertia", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
+      { key: "mantleReach", label: "Mantle reach", min: 1, max: 10, step: 0.5 },
+      { key: "mantleSpeed", label: "Mantle speed", min: 2, max: 20, step: 0.5 },
+      { key: "mantleMomentumPreserve", label: "Mantle momentum", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
     ],
   },
   {

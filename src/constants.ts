@@ -96,6 +96,11 @@ export interface GameTuning {
   landingCameraDip: number;
   turnInertia: number;
   jetStartupTime: number;
+
+  enableMantle: boolean;
+  mantleReach: number;
+  mantleSpeed: number;
+  mantleMomentumPreserve: number;
 }
 
 export const _builtinDefaults: GameTuning = {
@@ -107,7 +112,7 @@ export const _builtinDefaults: GameTuning = {
   jetEnergyDrain: 25,
   jetEnergyRegen: 15,
   airControl: 0.02,
-  playerHeight: 1.8,
+  playerHeight: 10,
   walkSpeed: 12,
   mouseSensitivity: 0.002,
   groundSnapThreshold: 0.5,
@@ -180,6 +185,11 @@ export const _builtinDefaults: GameTuning = {
   landingCameraDip: 0,
   turnInertia: 0,
   jetStartupTime: 0,
+
+  enableMantle: false,
+  mantleReach: 4,
+  mantleSpeed: 8,
+  mantleMomentumPreserve: 0.5,
 };
 
 const STORAGE_KEY = "retribes_tuning";
