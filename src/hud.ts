@@ -5,7 +5,7 @@ import { tuning } from "./constants";
 const HUD_HTML = `
 <div id="hud" style="
   position: fixed; top: 0; bottom: 0; right: 0; pointer-events: none; z-index: 5;
-  font-family: 'Consolas', 'SF Mono', monospace; color: #fff;
+  font-family: 'Consolas', 'SF Mono', monospace; color: #d0e4dc;
 ">
   <!-- Crosshair -->
   <div style="
@@ -13,8 +13,8 @@ const HUD_HTML = `
     transform: translate(-50%, -50%);
     width: 24px; height: 24px;
   ">
-    <div style="position:absolute; top:50%; left:0; right:0; height:2px; margin-top:-1px; background:rgba(255,255,255,0.7);"></div>
-    <div style="position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px; background:rgba(255,255,255,0.7);"></div>
+    <div style="position:absolute; top:50%; left:0; right:0; height:2px; margin-top:-1px; background:rgba(180,210,200,0.82);"></div>
+    <div style="position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px; background:rgba(180,210,200,0.82);"></div>
   </div>
 
   <!-- Bottom-left readouts -->
@@ -34,15 +34,15 @@ const HUD_HTML = `
     <div style="font-size:11px; text-transform:uppercase; letter-spacing:1px; opacity:0.6; margin-bottom:4px;">Energy</div>
     <div style="
       width: 140px; height: 14px;
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.25);
+      background: rgba(40,55,60,0.55);
+      border: 1px solid rgba(120,160,175,0.35);
       border-radius: 2px;
       overflow: hidden;
     ">
       <div id="hud-energy-fill" style="
         height: 100%;
         width: 100%;
-        background: #44bbff;
+        background: linear-gradient(90deg, #3a5a78, #7a9eb8);
         transition: width 0.05s linear;
       "></div>
     </div>
@@ -65,7 +65,7 @@ const HUD_HTML = `
   <!-- Impact vignette overlay -->
   <div id="hud-vignette" style="
     position:absolute; inset:0; pointer-events:none; opacity:0;
-    background: radial-gradient(ellipse at center, transparent 40%, rgba(180,30,20,0.6) 100%);
+    background: radial-gradient(ellipse at center, transparent 40%, rgba(30,50,70,0.65) 100%);
   "></div>
 
   <!-- Speed lines overlay -->
@@ -101,13 +101,13 @@ export function initHUD(initialPanelVisible: boolean): void {
     .hud-badge {
       font-size: 12px; padding: 3px 10px; border-radius: 3px;
       text-transform: uppercase; letter-spacing: 1px;
-      background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(30,45,42,0.5); color: rgba(140,170,155,0.45);
+      border: 1px solid rgba(80,110,100,0.35);
       transition: background 0.1s, color 0.1s, border-color 0.1s;
     }
     .hud-badge.active {
-      background: rgba(255,255,255,0.2); color: #fff;
-      border-color: rgba(255,255,255,0.4);
+      background: rgba(60,100,85,0.45); color: #e8f4ee;
+      border-color: rgba(120,180,150,0.55);
     }
   `;
   document.head.appendChild(badgeStyle);
@@ -149,7 +149,12 @@ export function updateHUD(player: PlayerController, remoteCount = 0, impactFlash
     energyFillEl.style.width = `${player.energy}%`;
     lastEnergy = energy;
   }
-  const color = player.energy < 20 ? "#ff4444" : player.energy < 50 ? "#ffaa22" : "#44bbff";
+  const color =
+    player.energy < 20
+      ? "linear-gradient(90deg, #8a3038, #b05050)"
+      : player.energy < 50
+        ? "linear-gradient(90deg, #3a5a68, #5a8090)"
+        : "linear-gradient(90deg, #4a6a88, #8ab0c8)";
   if (color !== lastEnergyColor) {
     energyFillEl.style.background = color;
     lastEnergyColor = color;

@@ -9,8 +9,9 @@ const JET_EMIT_INTERVAL = 0.02;
 const JET_MAX_PARTICLES = 40;
 
 const MODEL_PATH = "models/RobotExpressive.glb";
-const MODEL_SCALE = 5.5;
-const MODEL_Y_OFFSET = -9.0;
+/** Visual scale for remote GLTF + fallback (⅛ of original 5.5 / -9). */
+const MODEL_SCALE = 5.5 * 0.125;
+const MODEL_Y_OFFSET = -9.0 * 0.125;
 
 // ─── Shared model cache ──────────────────────────────────────────
 
@@ -148,20 +149,20 @@ class RemotePlayer {
     this.group = new THREE.Group();
 
     // Capsule fallback while GLTF loads
-    const geo = new THREE.CapsuleGeometry(0.5, 1.4, 4, 8);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x44aaff, roughness: 0.6, metalness: 0.2 });
+    const geo = new THREE.CapsuleGeometry(0.0625, 0.175, 4, 8);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x3d5a70, roughness: 0.55, metalness: 0.42 });
     this.fallbackBody = new THREE.Mesh(geo, mat);
     this.group.add(this.fallbackBody);
 
     // Grapple rope
-    this.ropeGeo = new THREE.CylinderGeometry(0.05, 0.05, 1, 4, 1);
-    const ropeMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, fog: false });
+    this.ropeGeo = new THREE.CylinderGeometry(0.00625, 0.00625, 1, 4, 1);
+    const ropeMat = new THREE.MeshBasicMaterial({ color: 0xc9a040, fog: false });
     this.rope = new THREE.Mesh(this.ropeGeo, ropeMat);
     this.rope.frustumCulled = false;
     this.rope.visible = false;
 
     // Jet particles
-    this.jetPool = new MiniParticlePool(JET_MAX_PARTICLES, new THREE.Color(0x88ddff), 0.4);
+    this.jetPool = new MiniParticlePool(JET_MAX_PARTICLES, new THREE.Color(0x98c8e0), 0.055);
 
     this.loadModel();
   }
@@ -275,12 +276,12 @@ class RemotePlayer {
       while (this.jetTimer >= JET_EMIT_INTERVAL) {
         this.jetTimer -= JET_EMIT_INTERVAL;
         this.jetPool.emit(
-          this.currentPos.x + (Math.random() - 0.5) * 0.5,
-          this.currentPos.y - 1.2,
-          this.currentPos.z + (Math.random() - 0.5) * 0.5,
-          (Math.random() - 0.5) * 2,
-          -(2 + Math.random() * 4),
-          (Math.random() - 0.5) * 2,
+          this.currentPos.x + (Math.random() - 0.5) * 0.0625,
+          this.currentPos.y - 0.15,
+          this.currentPos.z + (Math.random() - 0.5) * 0.0625,
+          (Math.random() - 0.5) * 0.25,
+          -(0.25 + Math.random() * 0.5),
+          (Math.random() - 0.5) * 0.25,
           0.25 + Math.random() * 0.2,
         );
       }

@@ -4,7 +4,9 @@ import { tuning } from "./constants";
 import type { MapType, StructureBounds } from "./terrain";
 
 const RAY_ORIGIN_OFFSET = 500;
-const GRAVITY_BLEND_ZONE = 50;
+
+/** Unit length for diagonal structure-collision probes (1/√3). */
+const INV_SQRT3 = 1 / Math.sqrt(3);
 
 export class PlayerController {
   readonly camera: THREE.PerspectiveCamera;
@@ -31,6 +33,7 @@ export class PlayerController {
   private jetRegenTimer = 0;
   private jetStartupTimer = 0;
   private jetStartupPending = false;
+  private skiLaunchTimer = 0;
 
   // Chain bonus: tracks recent movement mode transitions
   private chainCount = 0;
@@ -53,6 +56,8 @@ export class PlayerController {
   /** Grapple state — public so main.ts can draw the rope */
   grappleAttached = false;
   grappleTraveling = false;
+  /** Hook is flying back to the hand after release — rope stays visible until it arrives. */
+  grappleRetracting = false;
   readonly grappleAnchor = new THREE.Vector3();
   readonly grappleHookPos = new THREE.Vector3();
   grappleRopeLength = 0;
@@ -60,6 +65,8 @@ export class PlayerController {
   private readonly grappleDir = new THREE.Vector3();
   private grappleDistTraveled = 0;
   private grappleWasAirborne = false;
+  /** Matches rope origin in main.ts (hand offset from eye). */
+  private readonly _grappleHandLocal = new THREE.Vector3(0.15, -1.3, -0.6);
 
   // Mantle state
   private mantling = false;
@@ -194,6 +201,31 @@ export class PlayerController {
     this.camera.position.copy(this.position);
   }
 
+  /** Clamp surface-parallel speed when `maxSpeed` > 0 (flat: XZ; sphere: tangent to radial). */
+  private clampMaxSurfaceSpeed(): void {
+    if (tuning.maxSpeed <= 0) return;
+    if (this.mapType === "sphere") {
+      const outward = this._tv5.subVectors(this.position, this.sphereCenter);
+      if (outward.lengthSq() < 0.001) return;
+      outward.normalize();
+      const radial = this.velocity.dot(outward);
+      const tangent = this._tv6.copy(this.velocity).addScaledVector(outward, -radial);
+      const tangentSpeed = tangent.length();
+      if (tangentSpeed > tuning.maxSpeed) {
+        tangent.multiplyScalar(tuning.maxSpeed / tangentSpeed);
+        this.velocity.copy(tangent).addScaledVector(outward, radial);
+      }
+    } else {
+      const hSpeedSq = this.velocity.x ** 2 + this.velocity.z ** 2;
+      const capSq = tuning.maxSpeed ** 2;
+      if (hSpeedSq > capSq) {
+        const scale = tuning.maxSpeed / Math.sqrt(hSpeedSq);
+        this.velocity.x *= scale;
+        this.velocity.z *= scale;
+      }
+    }
+  }
+
   spawn(x: number, z: number, facingAngle: number, y?: number): void {
     if (this.mapType === "sphere" && y !== undefined) {
       this.position.set(x, y, z);
@@ -206,6 +238,7 @@ export class PlayerController {
     this.gravitySign = 1;
     this.grappleAttached = false;
     this.grappleTraveling = false;
+    this.grappleRetracting = false;
 
     if (this.mapType === "sphere") {
       const up = this._tv0.subVectors(this.sphereCenter, this.position).normalize();
@@ -238,6 +271,11 @@ export class PlayerController {
       const tanSq = this.velocity.lengthSq() - radialSpeed * radialSpeed;
       return Math.sqrt(Math.max(0, tanSq));
     }
+    if (this.grounded && this.groundNormal.lengthSq() > 0.0001) {
+      const vDotN = this.velocity.dot(this.groundNormal);
+      const tanSq = this.velocity.lengthSq() - vDotN * vDotN;
+      return Math.sqrt(Math.max(0, tanSq));
+    }
     return Math.sqrt(this.velocity.x ** 2 + this.velocity.z ** 2);
   }
 
@@ -247,7 +285,8 @@ export class PlayerController {
       // Player at distance D from center. Surface at S. Altitude = S - D - playerHeight.
       return this.sphereRadius - this.position.distanceTo(this.sphereCenter) - tuning.playerHeight;
     }
-    return this.position.y - tuning.playerHeight;
+    const midpoint = this.mirrorY / 2;
+    return (this.position.y - midpoint) * this.gravitySign;
   }
 
   update(dt: number, input: InputState): void {
@@ -291,6 +330,31 @@ export class PlayerController {
         this.velocity.z += this.forward.z * tuning.skiEntryBoost;
       }
     }
+    // --- Ski launch window ---
+    if (!this.skiing && wasSkiing && this.grounded && tuning.skiLaunchWindow > 0) {
+      const hSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+      if (hSpeed > 5) {
+        this.skiLaunchTimer = tuning.skiLaunchWindow;
+      }
+    }
+    if (this.skiLaunchTimer > 0) {
+      this.skiLaunchTimer -= dt;
+      if (this.skiing || this.jetting) this.skiLaunchTimer = 0;
+    }
+
+    if (
+      tuning.enableSkiReleaseBoost &&
+      wasSkiing &&
+      !this.skiing &&
+      !this.jetting &&
+      (tuning.skiReleaseBoost > 0 || tuning.skiReleasePop > 0)
+    ) {
+      const coyote = tuning.skiReleaseCoyoteMs;
+      if (this.grounded || (coyote > 0 && this.timeSinceGrounded < coyote)) {
+        this.applySkiReleaseBoostImpulse();
+      }
+    }
+
     this.prevSkiing = this.skiing;
     this.prevJetting = this.jetting;
 
@@ -321,21 +385,25 @@ export class PlayerController {
       let strafeInput = 0;
       if (input.isDown("KeyD")) strafeInput += 1;
       if (input.isDown("KeyA")) strafeInput -= 1;
-      const targetRoll = -strafeInput * tuning.strafeRollAngle * Math.PI / 180 *
-        Math.min(1, this.speed / 30);
-      const camFwd = this._tv0.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      const currentUp = this._tv1.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-      const worldUp = this._tv3.set(0, 1, 0);
-      const currentRoll = Math.atan2(
-        currentUp.dot(this._tv2.crossVectors(camFwd, worldUp).normalize()),
-        currentUp.dot(worldUp),
-      );
-      const rollDiff = targetRoll - currentRoll;
-      if (Math.abs(rollDiff) > 0.001) {
-        const correction = rollDiff * Math.min(1, 8 * dt);
-        this._tq0.setFromAxisAngle(camFwd.set(0, 0, -1).applyQuaternion(this.camera.quaternion), correction);
-        this.camera.quaternion.premultiply(this._tq0);
-        this.camera.quaternion.normalize();
+      // When airborne with no strafe input, skip — let the gravity camera
+      // handle baseline roll so we don't fight "hold" or slow spring modes.
+      if (this.grounded || strafeInput !== 0) {
+        const targetRoll = -strafeInput * tuning.strafeRollAngle * Math.PI / 180 *
+          Math.min(1, this.speed / 30);
+        const camFwd = this._tv0.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+        const currentUp = this._tv1.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+        const worldUp = this.getUpDir();
+        const currentRoll = Math.atan2(
+          currentUp.dot(this._tv2.crossVectors(camFwd, worldUp).normalize()),
+          currentUp.dot(worldUp),
+        );
+        const rollDiff = targetRoll - currentRoll;
+        if (Math.abs(rollDiff) > 0.001) {
+          const correction = rollDiff * Math.min(1, 8 * dt);
+          this._tq0.setFromAxisAngle(camFwd.set(0, 0, -1).applyQuaternion(this.camera.quaternion), correction);
+          this.camera.quaternion.premultiply(this._tq0);
+          this.camera.quaternion.normalize();
+        }
       }
     }
 
@@ -360,6 +428,7 @@ export class PlayerController {
         this.smoothedCamY = this.camera.position.y;
         this.smoothedCamYInit = true;
       }
+      // Blend factor 0–1 per frame: pow(f, dt*60) makes the same smoothing at any framerate.
       const alpha = Math.pow(tuning.skiCamSmoothing, dt * 60);
       this.smoothedCamY = alpha * this.smoothedCamY + (1 - alpha) * this.camera.position.y;
       this.camera.position.y = this.smoothedCamY;
@@ -487,7 +556,7 @@ export class PlayerController {
       }
       let thrust = jetThrust;
       if (tuning.enableJetKick && !this.prevJetting) {
-        thrust *= 2.5;
+        thrust *= tuning.jetKickMultiplier;
       }
       this.velocity.addScaledVector(towardCenter, thrust * dt);
       if (hasInput) {
@@ -536,6 +605,7 @@ export class PlayerController {
         if (hasInput) {
           const radialSpeed = this.velocity.dot(outward);
           if (tuning.turnInertia > 0) {
+            // pow(f, dt*60): inertia blend is defined per-second, stable across framerates.
             const alpha = Math.pow(tuning.turnInertia, dt * 60);
             const targetVel = this._tv7.copy(wishDir).multiplyScalar(walkSpeed).addScaledVector(outward, radialSpeed);
             this.velocity.lerp(targetVel, 1 - alpha);
@@ -544,7 +614,7 @@ export class PlayerController {
             this.velocity.addScaledVector(outward, radialSpeed);
           }
         } else {
-          const friction = Math.exp(-groundFriction * 60 * dt);
+          const friction = Math.exp(-groundFriction * dt);
           const radialSpeed = this.velocity.dot(outward);
           this.velocity.addScaledVector(outward, -radialSpeed);
           this.velocity.multiplyScalar(friction);
@@ -564,7 +634,7 @@ export class PlayerController {
         effectiveAirControl *= speedFactor;
       }
       if (hasInput) {
-        this.velocity.addScaledVector(wishDir, effectiveAirControl * walkSpeed * dt * 60);
+        this.velocity.addScaledVector(wishDir, effectiveAirControl * walkSpeed * dt);
       }
       if (tuning.airDrag > 0) {
         const radialSpeed = this.velocity.dot(outward);
@@ -575,26 +645,16 @@ export class PlayerController {
       }
     }
 
-    // Grapple
-    const grappleDown = input.isMouseDown(0);
-    const grappleJustPressed = grappleDown && !this.grappleWasDown;
-    this.grappleWasDown = grappleDown;
-
-    if (grappleJustPressed && !this.grappleAttached && !this.grappleTraveling) {
-      this.grappleTraveling = true;
-      this.grappleHookPos.copy(this.position);
-      this.grappleDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      this.grappleDistTraveled = 0;
-    }
-    if (!grappleDown) {
-      this.grappleAttached = false;
-      this.grappleTraveling = false;
-    }
+    this.beginGrappleInput(input);
 
     if (this.grappleTraveling || this.grappleAttached) {
       this.updateGrappleProjectile(dt, this.floorMeshes, grappleRange, grapplePull, grappleSwingDamping);
     }
+    if (this.grappleRetracting) {
+      this.updateGrappleRetract(dt);
+    }
 
+    this.clampMaxSurfaceSpeed();
     this.position.addScaledVector(this.velocity, dt);
 
     // Ground collision
@@ -735,7 +795,7 @@ export class PlayerController {
 
     const midpoint = this.mirrorY / 2;
     const distFromMid = this.position.y - midpoint;
-    const rawBlend = distFromMid / GRAVITY_BLEND_ZONE;
+    const rawBlend = distFromMid / tuning.gravityBlendZone;
     const blend = Math.max(-1, Math.min(1, rawBlend));
     const gravSign = blend <= 0 ? 1 : -1;
     const gravStrength = Math.abs(blend);
@@ -794,7 +854,7 @@ export class PlayerController {
 
       let thrust = jetThrust;
       if (tuning.enableJetKick && !this.prevJetting) {
-        thrust *= 2.5;
+        thrust *= tuning.jetKickMultiplier;
       }
       this.velocity.y += gravSign * thrust * dt;
       if (hasInput) {
@@ -838,12 +898,17 @@ export class PlayerController {
         const skiF = Math.exp(-effectiveFriction * dt);
         this.velocity.x *= skiF;
         this.velocity.z *= skiF;
+      } else if (this.skiLaunchTimer > 0) {
+        // Preserve velocity during ski launch window — no walk friction
+        const skiF = Math.exp(-skiFriction * dt);
+        this.velocity.x *= skiF;
+        this.velocity.z *= skiF;
       } else {
         if (hasInput) {
           const targetX = wishDir.x * walkSpeed;
           const targetZ = wishDir.z * walkSpeed;
           if (tuning.turnInertia > 0) {
-            const alpha = Math.pow(tuning.turnInertia, dt * 60);
+            const alpha = Math.pow(tuning.turnInertia, dt * 60); // per-second blend; stable across fps
             this.velocity.x = alpha * this.velocity.x + (1 - alpha) * targetX;
             this.velocity.z = alpha * this.velocity.z + (1 - alpha) * targetZ;
           } else {
@@ -851,7 +916,7 @@ export class PlayerController {
             this.velocity.z = targetZ;
           }
         } else {
-          const friction = Math.exp(-groundFriction * 60 * dt);
+          const friction = Math.exp(-groundFriction * dt);
           this.velocity.x *= friction;
           this.velocity.z *= friction;
         }
@@ -867,8 +932,8 @@ export class PlayerController {
         effectiveAirControl *= speedFactor;
       }
       if (hasInput) {
-        this.velocity.x += wishDir.x * effectiveAirControl * walkSpeed * dt * 60;
-        this.velocity.z += wishDir.z * effectiveAirControl * walkSpeed * dt * 60;
+        this.velocity.x += wishDir.x * effectiveAirControl * walkSpeed * dt;
+        this.velocity.z += wishDir.z * effectiveAirControl * walkSpeed * dt;
       }
       if (tuning.airDrag > 0) {
         const dragF = Math.exp(-tuning.airDrag * dt);
@@ -877,22 +942,7 @@ export class PlayerController {
       }
     }
 
-    // Grapple
-    const grappleDown = input.isMouseDown(0);
-    const grappleJustPressed = grappleDown && !this.grappleWasDown;
-    this.grappleWasDown = grappleDown;
-
-    if (grappleJustPressed && !this.grappleAttached && !this.grappleTraveling) {
-      this.grappleTraveling = true;
-      this.grappleHookPos.copy(this.position);
-      this.grappleDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      this.grappleDistTraveled = 0;
-    }
-
-    if (!grappleDown) {
-      this.grappleAttached = false;
-      this.grappleTraveling = false;
-    }
+    this.beginGrappleInput(input);
 
     if (this.grappleTraveling || this.grappleAttached) {
       this._allMeshes.length = 0;
@@ -915,7 +965,11 @@ export class PlayerController {
       }
       this.updateGrappleProjectile(dt, this._allMeshes, grappleRange, grapplePull, grappleSwingDamping);
     }
+    if (this.grappleRetracting) {
+      this.updateGrappleRetract(dt);
+    }
 
+    this.clampMaxSurfaceSpeed();
     this.position.addScaledVector(this.velocity, dt);
 
     // Ground / ceiling collision
@@ -986,7 +1040,12 @@ export class PlayerController {
 
       // Ground check against structures: if not already grounded by terrain,
       // cast a short ray downward (toward gravity) to detect standing on a structure.
-      if (!this.grounded) {
+      // Skip snap when jet-launching (same logic as terrain ground check).
+      const jetLaunchingStruct = this.jetting && (
+        (gravSign > 0 && this.velocity.y > 0) ||
+        (gravSign < 0 && this.velocity.y < 0)
+      );
+      if (!this.grounded && !jetLaunchingStruct) {
         const downDir = this._tv3.set(0, -gravSign, 0);
         const savedFar = this.raycaster.far;
         this.raycaster.set(this.position, downDir);
@@ -1051,6 +1110,10 @@ export class PlayerController {
 
   private static readonly PROBE_DIRS: [number, number, number][] = [
     [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+    [INV_SQRT3, INV_SQRT3, INV_SQRT3], [-INV_SQRT3, INV_SQRT3, INV_SQRT3],
+    [INV_SQRT3, -INV_SQRT3, INV_SQRT3], [-INV_SQRT3, -INV_SQRT3, INV_SQRT3],
+    [INV_SQRT3, INV_SQRT3, -INV_SQRT3], [-INV_SQRT3, INV_SQRT3, -INV_SQRT3],
+    [INV_SQRT3, -INV_SQRT3, -INV_SQRT3], [-INV_SQRT3, -INV_SQRT3, -INV_SQRT3],
   ];
 
   private resolveStructureCollision(playerHeight: number): void {
@@ -1089,7 +1152,7 @@ export class PlayerController {
    */
   private tryMantle(gravSign: number, playerHeight: number): boolean {
     if (!tuning.enableMantle || this.grounded || this.mantling) return false;
-    if (this.grappleAttached || this.grappleTraveling) return false;
+    if (this.grappleAttached || this.grappleTraveling || this.grappleRetracting) return false;
     if (this.structureMeshes.length === 0) return false;
 
     const hSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
@@ -1199,6 +1262,50 @@ export class PlayerController {
     }
   }
 
+  private beginGrappleInput(input: InputState): void {
+    const grappleDown = input.isMouseDown(0);
+    const grappleJustPressed = grappleDown && !this.grappleWasDown;
+    this.grappleWasDown = grappleDown;
+
+    if (grappleJustPressed) {
+      this.grappleRetracting = false;
+      if (!this.grappleAttached && !this.grappleTraveling) {
+        this.grappleTraveling = true;
+        this.grappleHookPos.copy(this.position);
+        this.grappleDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+        this.grappleDistTraveled = 0;
+      }
+    }
+
+    if (!grappleDown) {
+      if ((this.grappleAttached || this.grappleTraveling) && !this.grappleRetracting) {
+        if (this.grappleAttached) {
+          this.grappleHookPos.copy(this.grappleAnchor);
+        }
+        this.grappleAttached = false;
+        this.grappleTraveling = false;
+        this.grappleRetracting = true;
+      }
+    }
+  }
+
+  private updateGrappleRetract(dt: number): void {
+    if (tuning.grappleRetractSpeed <= 0) {
+      this.grappleRetracting = false;
+      return;
+    }
+    const hand = this._tv7.copy(this._grappleHandLocal).applyQuaternion(this.camera.quaternion).add(this.position);
+    const toHand = this._tv8.subVectors(hand, this.grappleHookPos);
+    const dist = toHand.length();
+    if (dist < 0.35) {
+      this.grappleRetracting = false;
+      return;
+    }
+    toHand.divideScalar(dist);
+    const step = Math.min(tuning.grappleRetractSpeed * dt, dist);
+    this.grappleHookPos.addScaledVector(toHand, step);
+  }
+
   private updateGrappleProjectile(
     dt: number, meshes: THREE.Object3D[],
     range: number, pull: number, swingDamping: number,
@@ -1236,6 +1343,7 @@ export class PlayerController {
         this.grappleDistTraveled += step;
         if (this.grappleDistTraveled >= range) {
           this.grappleTraveling = false;
+          this.grappleRetracting = true;
         }
       }
     }
@@ -1557,7 +1665,7 @@ export class PlayerController {
     const futureY = this.position.y + this.velocity.y * lookAhead;
     const midpoint = this.mirrorY / 2;
     const futureDistFromMid = futureY - midpoint;
-    const futureBlend = Math.max(-1, Math.min(1, futureDistFromMid / GRAVITY_BLEND_ZONE));
+    const futureBlend = Math.max(-1, Math.min(1, futureDistFromMid / tuning.gravityBlendZone));
     const futureBlendLen = Math.abs(futureBlend);
 
     if (futureBlendLen > 0.05) {
@@ -1578,6 +1686,26 @@ export class PlayerController {
       // Future is in the dead zone — use current gravity
       const currentUp = this._tv5.set(0, this.gravitySign > 0 ? 1 : -1, 0);
       this.applySpringRoll(dt, currentUp, speed * 0.5);
+    }
+  }
+
+  /** Tangential kick + pop along surface normal (or anti-gravity if coyote) when releasing ski. */
+  private applySkiReleaseBoostImpulse(): void {
+    const up = this.getUpDir();
+    const tan = this._tv4.copy(this.velocity).addScaledVector(up, -this.velocity.dot(up));
+    const tanLen = tan.length();
+    if (tanLen < tuning.skiReleaseMinSpeed) return;
+
+    if (tuning.skiReleaseBoost > 0) {
+      this.velocity.addScaledVector(tan, tuning.skiReleaseBoost / tanLen);
+    }
+
+    if (tuning.skiReleasePop <= 0) return;
+
+    if (this.grounded && this.groundNormal.lengthSq() > 0.0001) {
+      this.velocity.addScaledVector(this.groundNormal, tuning.skiReleasePop);
+    } else {
+      this.velocity.addScaledVector(up, tuning.skiReleasePop);
     }
   }
 

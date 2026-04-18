@@ -11,16 +11,17 @@ function createSkyDome(): THREE.Mesh {
     depthWrite: false,
     fog: false,
     uniforms: {
-      topColor: { value: new THREE.Color(0x0a1a4a) },
-      horizonColor: { value: new THREE.Color(0x87ceeb) },
-      bottomColor: { value: new THREE.Color(0x886644) },
-      exponent: { value: 0.4 },
+      topColor: { value: new THREE.Color(0x3a5880) },
+      horizonColor: { value: new THREE.Color(0x7ec0d8) },
+      bottomColor: { value: new THREE.Color(0x4a7898) },
+      exponent: { value: 0.26 },
     },
     vertexShader: `
-      varying vec3 vWorldPos;
+      varying vec3 vRayDir;
       void main() {
         vec4 wp = modelMatrix * vec4(position, 1.0);
-        vWorldPos = wp.xyz;
+        vec3 center = modelMatrix[3].xyz;
+        vRayDir = normalize(wp.xyz - center);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
@@ -29,14 +30,57 @@ function createSkyDome(): THREE.Mesh {
       uniform vec3 horizonColor;
       uniform vec3 bottomColor;
       uniform float exponent;
-      varying vec3 vWorldPos;
+      varying vec3 vRayDir;
+
+      float hash12(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+      }
+
+      float starCellField(vec2 sc, float rare, float disk) {
+        vec2 ci = floor(sc);
+        float cellRnd = hash12(ci);
+        vec2 starPos = vec2(hash12(ci + 17.7), hash12(ci + 83.3));
+        vec2 delta = fract(sc) - starPos;
+        delta = fract(delta + 0.5) - 0.5;
+        float dist = length(delta);
+        float br = 0.75 + hash12(ci + 41.2) * 0.95;
+        float cellFw = length(vec2(fwidth(sc.x), fwidth(sc.y)));
+        float aa = max(max(cellFw * 2.25, fwidth(dist) * 1.5), 0.00035);
+        float falloff = 1.0 - smoothstep(disk - aa, disk + aa, dist);
+        float border = max(aa * 0.28, 0.0006);
+        float gate = smoothstep(rare - border, rare + border, cellRnd);
+        return gate * falloff * br;
+      }
+
+      float whiteStarsTriplanar(vec3 rd, float scale, float rare, float disk) {
+        vec3 w = abs(rd);
+        float n = w.x + w.y + w.z;
+        w /= n;
+        return
+          w.x * starCellField(vec2(rd.y, rd.z) * scale, rare, disk) +
+          w.y * starCellField(vec2(rd.x, rd.z) * scale, rare, disk) +
+          w.z * starCellField(vec2(rd.x, rd.y) * scale, rare, disk);
+      }
+
       void main() {
-        float h = normalize(vWorldPos).y;
+        vec3 rd = normalize(vRayDir);
+        float h = rd.y;
+        vec3 skyColor;
         if (h >= 0.0) {
-          gl_FragColor = vec4(mix(horizonColor, topColor, pow(h, exponent)), 1.0);
+          skyColor = mix(horizonColor, topColor, pow(h, exponent));
         } else {
-          gl_FragColor = vec4(mix(horizonColor, bottomColor, pow(-h, 1.5)), 1.0);
+          skyColor = mix(horizonColor, bottomColor, pow(-h, 1.5));
         }
+        float lum = dot(skyColor, vec3(0.2126, 0.7152, 0.0722));
+        skyColor = clamp(mix(vec3(lum), skyColor, 1.14), 0.0, 1.0);
+
+        float s = whiteStarsTriplanar(rd, 95.0, 0.987, 0.14);
+        s += whiteStarsTriplanar(rd, 152.0, 0.992, 0.09);
+        skyColor += vec3(s * 0.58);
+
+        gl_FragColor = vec4(skyColor, 1.0);
       }
     `,
   });
@@ -121,9 +165,9 @@ class ParticlePool {
 
 // ─── Visual System ───────────────────────────────────────────────
 
-const FLAT_GROUND_COLOR = 0x4a7a3b;
-const FLAT_CEILING_COLOR = 0x3a5a6b;
-const SPHERE_GROUND_COLOR = 0x4a7a3b;
+const FLAT_GROUND_COLOR = 0x4a8848;
+const FLAT_CEILING_COLOR = 0x3a6888;
+const SPHERE_GROUND_COLOR = 0x4a8848;
 
 export class VisualSystem {
   readonly skyDome: THREE.Mesh;
@@ -167,13 +211,13 @@ export class VisualSystem {
     this.skyDome = createSkyDome();
     scene.add(this.skyDome);
 
-    this.hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x8b7355, tuning.hemisphereLightIntensity);
+    this.hemiLight = new THREE.HemisphereLight(0x88c8e8, 0x5a8a62, tuning.hemisphereLightIntensity);
     scene.add(this.hemiLight);
 
-    this.jetPool = new ParticlePool(150, new THREE.Color(0x88ddff), 0.5, THREE.AdditiveBlending, 0.7);
+    this.jetPool = new ParticlePool(150, new THREE.Color(0x58c8ff), 0.52, THREE.AdditiveBlending, 0.62);
     scene.add(this.jetPool.points);
 
-    this.skiPool = new ParticlePool(100, new THREE.Color(0xccbb99), 0.9, THREE.NormalBlending, 0.45);
+    this.skiPool = new ParticlePool(100, new THREE.Color(0xb0c878), 0.8, THREE.NormalBlending, 0.48);
     scene.add(this.skiPool.points);
 
     this.applyToneMapping();
@@ -215,7 +259,7 @@ export class VisualSystem {
       this.scene.background = null;
     } else {
       this.skyDome.visible = false;
-      this.scene.background = new THREE.Color(0x87ceeb);
+      this.scene.background = new THREE.Color(0x6e98b0);
     }
     this.prevSkyGradient = tuning.enableSkyGradient;
   }
@@ -241,7 +285,7 @@ export class VisualSystem {
     if (tuning.enableHemisphereLight) {
       this.hemiLight.visible = true;
       this.hemiLight.intensity = tuning.hemisphereLightIntensity;
-      this.ambientLight.intensity = 0.15;
+      this.ambientLight.intensity = 0.28;
     } else {
       this.hemiLight.visible = false;
       this.ambientLight.intensity = 0.4;

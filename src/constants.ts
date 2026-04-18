@@ -22,11 +22,15 @@ export interface GameTuning {
   jetEnergyDrain: number;
   jetEnergyRegen: number;
   airControl: number;
+  /** Initial jet thrust multiplier on first frame after jet engages (when enableJetKick). */
+  jetKickMultiplier: number;
   playerHeight: number;
   walkSpeed: number;
   mouseSensitivity: number;
   invertY: boolean;
   groundSnapThreshold: number;
+  /** Meters from midpoint over which gravity blends between floor and ceiling (flat map). */
+  gravityBlendZone: number;
   skiSteerFactor: number;
   jetForwardBias: number;
   gravityCamera: GravityCameraMode;
@@ -46,6 +50,10 @@ export interface GameTuning {
   grappleConnectBoost: number;
   grappleConnectUpBias: number;
   grappleAutoDetachRadius: number;
+  /** Speed (m/s) the hook travels back to the hand after you release (0 = instant hide). */
+  grappleRetractSpeed: number;
+  /** Uniform scale of the grapple orb at the rope tip (larger = easier to see at high hook speed). */
+  grappleHookVisualScale: number;
 
   enableSkyGradient: boolean;
   enableVertexColors: boolean;
@@ -86,6 +94,17 @@ export interface GameTuning {
   landingAngleBoost: number;
   landingAnglePenalty: number;
   skiGroundAdherence: number;
+  skiLaunchWindow: number;
+  /** Releasing ski adds tangent + “pop” impulse — helps launch off lips instead of gripping. */
+  enableSkiReleaseBoost: boolean;
+  /** Extra speed in your slide direction when you release ski (m/s). */
+  skiReleaseBoost: number;
+  /** Impulse along surface up / ground normal when grounded, else anti-gravity (m/s). */
+  skiReleasePop: number;
+  /** Minimum tangent speed (m/s) required for release boost. */
+  skiReleaseMinSpeed: number;
+  /** Ms after leaving ground where release boost can still fire (0 = grounded only). */
+  skiReleaseCoyoteMs: number;
 
   jetRegenDelay: number;
   airDrag: number;
@@ -97,6 +116,8 @@ export interface GameTuning {
   landingCameraDip: number;
   turnInertia: number;
   jetStartupTime: number;
+  /** Max horizontal (flat) or tangential (sphere) surface speed in m/s; 0 = no cap. */
+  maxSpeed: number;
 
   enableMantle: boolean;
   mantleReach: number;
@@ -108,16 +129,18 @@ export const _builtinDefaults: GameTuning = {
   mapType: "flat",
   gravity: 20,
   skiFriction: 0.001,
-  groundFriction: 0.15,
+  groundFriction: 9,
   jetThrust: 38,
   jetEnergyDrain: 25,
   jetEnergyRegen: 15,
-  airControl: 0.02,
+  airControl: 1.2,
+  jetKickMultiplier: 2.5,
   playerHeight: 1.8,
   walkSpeed: 12,
   mouseSensitivity: 0.002,
   invertY: false,
   groundSnapThreshold: 0.5,
+  gravityBlendZone: 50,
   skiSteerFactor: 0.08,
   jetForwardBias: 0.15,
   gravityCamera: "none",
@@ -137,21 +160,23 @@ export const _builtinDefaults: GameTuning = {
   grappleConnectBoost: 15,
   grappleConnectUpBias: 10,
   grappleAutoDetachRadius: 5,
+  grappleRetractSpeed: 95,
+  grappleHookVisualScale: 5,
 
   enableSkyGradient: true,
   enableVertexColors: true,
   enableHemisphereLight: true,
-  hemisphereLightIntensity: 0.6,
+  hemisphereLightIntensity: 0.95,
   enableFovScaling: true,
   fovScaleAmount: 0.15,
   enableJetParticles: true,
   enableSkiParticles: true,
   enableToneMapping: true,
-  toneMappingExposure: 1.0,
+  toneMappingExposure: 1.2,
   enableMarkers: true,
   enableCeiling: true,
-  fogNear: 300,
-  fogFar: 800,
+  fogNear: 280,
+  fogFar: 960,
   cameraFar: 2500,
 
   impactThreshold: 8,
@@ -176,6 +201,12 @@ export const _builtinDefaults: GameTuning = {
   landingAngleBoost: 1.0,
   landingAnglePenalty: 1.0,
   skiGroundAdherence: 0,
+  skiLaunchWindow: 0,
+  enableSkiReleaseBoost: true,
+  skiReleaseBoost: 6,
+  skiReleasePop: 4.5,
+  skiReleaseMinSpeed: 4,
+  skiReleaseCoyoteMs: 55,
 
   jetRegenDelay: 0,
   airDrag: 0,
@@ -187,6 +218,7 @@ export const _builtinDefaults: GameTuning = {
   landingCameraDip: 0,
   turnInertia: 0,
   jetStartupTime: 0,
+  maxSpeed: 0,
 
   enableMantle: false,
   mantleReach: 4,
@@ -197,6 +229,8 @@ export const _builtinDefaults: GameTuning = {
 const STORAGE_KEY = "retribes_tuning";
 const CUSTOM_PRESETS_KEY = "retribes_customPresets";
 const ACTIVE_PRESET_KEY = "retribes_activePreset";
+/** One-time: airControl/groundFriction were rescaled to remove per-frame *60 factors. */
+const DT60_PHYSICS_MIGRATION_KEY = "retribes_dt60PhysicsMigrated";
 
 function loadFromStorage(key: string): Partial<GameTuning> {
   try {
@@ -214,6 +248,22 @@ export function saveTuning(): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tuning));
   } catch { /* storage full / blocked */ }
 }
+
+try {
+  if (!localStorage.getItem(DT60_PHYSICS_MIGRATION_KEY)) {
+    let changed = false;
+    if (tuning.airControl > 0 && tuning.airControl <= 0.25) {
+      tuning.airControl *= 60;
+      changed = true;
+    }
+    if (tuning.groundFriction > 0 && tuning.groundFriction <= 1) {
+      tuning.groundFriction *= 60;
+      changed = true;
+    }
+    localStorage.setItem(DT60_PHYSICS_MIGRATION_KEY, "1");
+    if (changed) saveTuning();
+  }
+} catch { /* storage blocked */ }
 
 export function loadCustomPresets(): Preset[] {
   try {
@@ -271,6 +321,12 @@ export const BUILT_IN_PRESETS: Preset[] = [
       landingAngleBoost: 1,
       landingAnglePenalty: 1,
       skiGroundAdherence: 2,
+      skiLaunchWindow: 0.15,
+      enableSkiReleaseBoost: true,
+      skiReleaseBoost: 7,
+      skiReleasePop: 5,
+      skiReleaseMinSpeed: 3.5,
+      skiReleaseCoyoteMs: 60,
       skiCamSmoothing: 0.5,
       slopeSpeedBonus: 1.5,
       // Gravity camera
@@ -306,7 +362,7 @@ export const BUILT_IN_PRESETS: Preset[] = [
       landingRecoveryTime: 0.1,
       // Player / visuals
       playerHeight: 1.8,
-      enableSkyGradient: false,
+      enableSkyGradient: true,
       fogNear: 20,
       fogFar: 1500,
     },

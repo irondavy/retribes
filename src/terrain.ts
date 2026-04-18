@@ -56,11 +56,11 @@ function applyVertexColors(
       const t = 1 - (r - rMin) / rRange;
 
       if (t < 0.3) {
-        c.lerpColors(new THREE.Color(0x2a5a1a), new THREE.Color(0x4a8a3b), t / 0.3);
+        c.lerpColors(new THREE.Color(0x2d6838), new THREE.Color(0x3d8848), t / 0.3);
       } else if (t < 0.65) {
-        c.lerpColors(new THREE.Color(0x4a8a3b), new THREE.Color(0x8a7a55), (t - 0.3) / 0.35);
+        c.lerpColors(new THREE.Color(0x786838), new THREE.Color(0xa89850), (t - 0.3) / 0.35);
       } else {
-        c.lerpColors(new THREE.Color(0x8a7a55), new THREE.Color(0xd8d0c8), (t - 0.65) / 0.35);
+        c.lerpColors(new THREE.Color(0x5a9080), new THREE.Color(0x78b8a0), (t - 0.65) / 0.35);
       }
 
       colors[i * 3] = c.r;
@@ -84,25 +84,25 @@ function applyVertexColors(
 
       if (mode === "ceiling") {
         if (t < 0.35) {
-          c.lerpColors(new THREE.Color(0x1a2038), new THREE.Color(0x2a3a5b), t / 0.35);
+          c.lerpColors(new THREE.Color(0x283848), new THREE.Color(0x355868), t / 0.35);
         } else if (t < 0.7) {
-          c.lerpColors(new THREE.Color(0x2a3a5b), new THREE.Color(0x4a6080), (t - 0.35) / 0.35);
+          c.lerpColors(new THREE.Color(0x3a7890), new THREE.Color(0x4898b0), (t - 0.35) / 0.35);
         } else {
-          c.lerpColors(new THREE.Color(0x4a6080), new THREE.Color(0x7090a8), (t - 0.7) / 0.3);
+          c.lerpColors(new THREE.Color(0x604878), new THREE.Color(0x786898), (t - 0.7) / 0.3);
         }
         if (steepness > 0.25) {
-          c.lerp(new THREE.Color(0x1a2530), Math.min(1, (steepness - 0.25) / 0.35) * 0.6);
+          c.lerp(new THREE.Color(0x1a2030), Math.min(1, (steepness - 0.25) / 0.35) * 0.5);
         }
       } else {
         if (t < 0.3) {
-          c.lerpColors(new THREE.Color(0x2a5a1a), new THREE.Color(0x4a8a3b), t / 0.3);
+          c.lerpColors(new THREE.Color(0x2d6838), new THREE.Color(0x3d8848), t / 0.3);
         } else if (t < 0.65) {
-          c.lerpColors(new THREE.Color(0x4a8a3b), new THREE.Color(0x8a7a55), (t - 0.3) / 0.35);
+          c.lerpColors(new THREE.Color(0x786838), new THREE.Color(0xa89850), (t - 0.3) / 0.35);
         } else {
-          c.lerpColors(new THREE.Color(0x8a7a55), new THREE.Color(0xd8d0c8), (t - 0.65) / 0.35);
+          c.lerpColors(new THREE.Color(0x5a9080), new THREE.Color(0x78b8a0), (t - 0.65) / 0.35);
         }
         if (steepness > 0.25) {
-          c.lerp(new THREE.Color(0x6a6560), Math.min(1, (steepness - 0.25) / 0.35) * 0.6);
+          c.lerp(new THREE.Color(0x384838), Math.min(1, (steepness - 0.25) / 0.35) * 0.45);
         }
       }
 
@@ -139,41 +139,90 @@ function hash2(ix: number, iz: number): number {
   return ((h ^ (h >> 16)) >>> 0) / 0xffffffff;
 }
 
+/** Shared GLSL: smooth value noise + trilinear sample for organic grid warp (injected once per fragment shader). */
+const GRID_SHADER_HELPERS = `
+varying vec3 vWorldPositionGrid;
+float retribesGridHash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float retribesGridNoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = retribesGridHash(i);
+  float b = retribesGridHash(i + vec2(1.0, 0.0));
+  float c = retribesGridHash(i + vec2(0.0, 1.0));
+  float d = retribesGridHash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float retribesGridHash3(vec3 p) {
+  return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+}
+float retribesGridNoise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  vec3 u = f * f * (3.0 - 2.0 * f);
+  float n000 = retribesGridHash3(i);
+  float n100 = retribesGridHash3(i + vec3(1.0, 0.0, 0.0));
+  float n010 = retribesGridHash3(i + vec3(0.0, 1.0, 0.0));
+  float n110 = retribesGridHash3(i + vec3(1.0, 1.0, 0.0));
+  float n001 = retribesGridHash3(i + vec3(0.0, 0.0, 1.0));
+  float n101 = retribesGridHash3(i + vec3(1.0, 0.0, 1.0));
+  float n011 = retribesGridHash3(i + vec3(0.0, 1.0, 1.0));
+  float n111 = retribesGridHash3(i + vec3(1.0, 1.0, 1.0));
+  float x00 = mix(n000, n100, u.x);
+  float x10 = mix(n010, n110, u.x);
+  float x01 = mix(n001, n101, u.x);
+  float x11 = mix(n011, n111, u.x);
+  float y0 = mix(x00, x10, u.y);
+  float y1 = mix(x01, x11, u.y);
+  return mix(y0, y1, u.z);
+}
+`;
+
 function attachGroundGridShader(mat: THREE.MeshStandardMaterial, cellMeters: number): void {
   mat.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader.replace(
       "#include <common>",
       `#include <common>
-varying vec3 vWorldPositionGrid;`
+varying vec3 vWorldPositionGrid;`,
     );
     shader.vertexShader = shader.vertexShader.replace(
       "#include <worldpos_vertex>",
       `#include <worldpos_vertex>
-vWorldPositionGrid = worldPosition.xyz;`
+vWorldPositionGrid = worldPosition.xyz;`,
     );
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <common>",
       `#include <common>
-varying vec3 vWorldPositionGrid;`
+${GRID_SHADER_HELPERS}`,
     );
+    const cell = cellMeters.toFixed(6);
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <map_fragment>",
       `#include <map_fragment>
 {
   vec2 xz = vWorldPositionGrid.xz;
-  float cell = ${cellMeters.toFixed(6)};
-  vec2 coord = xz / cell;
+  float cell = ${cell};
+  vec2 w = xz / cell;
+  vec2 warp = (vec2(
+    retribesGridNoise2(w * 0.095 + vec2(3.1, 1.7)),
+    retribesGridNoise2(w * 0.095 + vec2(19.4, 7.2))
+  ) - 0.5) * 0.52;
+  vec2 coord = w + warp;
   vec2 f = fract(coord);
   vec2 dw = fwidth(coord);
   float a = min(f.x, 1.0 - f.x);
   float b = min(f.y, 1.0 - f.y);
   float lineDist = min(a, b);
-  float lineW = max(dw.x, dw.y) * 0.85 + 0.015;
+  float lineW = max(dw.x, dw.y) * 1.12 + 0.018;
   float lineMask = 1.0 - smoothstep(0.0, lineW, lineDist);
-  vec3 darker = diffuseColor.rgb * 0.48;
-  diffuseColor.rgb = mix(diffuseColor.rgb, darker, lineMask);
+  float vary = 0.5 + 0.5 * retribesGridNoise2(w * 0.12 + vec2(40.0, 8.0));
+  lineMask *= vary;
+  vec3 darker = diffuseColor.rgb * 0.52;
+  diffuseColor.rgb = mix(diffuseColor.rgb, darker, lineMask * 0.62);
 }
-`
+`,
     );
   };
 }
@@ -183,37 +232,46 @@ function attachSphereGridShader(mat: THREE.MeshStandardMaterial, cellMeters: num
     shader.vertexShader = shader.vertexShader.replace(
       "#include <common>",
       `#include <common>
-varying vec3 vWorldPositionGrid;`
+varying vec3 vWorldPositionGrid;`,
     );
     shader.vertexShader = shader.vertexShader.replace(
       "#include <worldpos_vertex>",
       `#include <worldpos_vertex>
-vWorldPositionGrid = worldPosition.xyz;`
+vWorldPositionGrid = worldPosition.xyz;`,
     );
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <common>",
       `#include <common>
-varying vec3 vWorldPositionGrid;`
+${GRID_SHADER_HELPERS}`,
     );
+    const cell = cellMeters.toFixed(6);
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <map_fragment>",
       `#include <map_fragment>
 {
   vec3 wp = vWorldPositionGrid;
-  float cell = ${cellMeters.toFixed(6)};
-  vec3 coord = wp / cell;
+  float cell = ${cell};
+  vec3 w = wp / cell;
+  vec3 warp = (vec3(
+    retribesGridNoise3(w * 0.088 + vec3(2.0, 5.0, 1.0)),
+    retribesGridNoise3(w * 0.088 + vec3(11.0, 3.0, 7.0)),
+    retribesGridNoise3(w * 0.088 + vec3(4.0, 13.0, 9.0))
+  ) - 0.5) * 0.42;
+  vec3 coord = w + warp;
   vec3 f = fract(coord);
   vec3 dw = fwidth(coord);
   float a = min(f.x, 1.0 - f.x);
   float b = min(f.y, 1.0 - f.y);
   float c = min(f.z, 1.0 - f.z);
   float lineDist = min(min(a, b), c);
-  float lineW = max(max(dw.x, dw.y), dw.z) * 0.85 + 0.015;
+  float lineW = max(max(dw.x, dw.y), dw.z) * 1.12 + 0.018;
   float lineMask = 1.0 - smoothstep(0.0, lineW, lineDist);
-  vec3 darker = diffuseColor.rgb * 0.48;
-  diffuseColor.rgb = mix(diffuseColor.rgb, darker, lineMask);
+  float vary = 0.5 + 0.5 * retribesGridNoise3(w * 0.11 + vec3(30.0, 2.0, 18.0));
+  lineMask *= vary;
+  vec3 darker = diffuseColor.rgb * 0.52;
+  diffuseColor.rgb = mix(diffuseColor.rgb, darker, lineMask * 0.58);
 }
-`
+`,
     );
   };
 }
@@ -570,7 +628,13 @@ function scatterFlatMarkers(markerGroup: THREE.Group): void {
   if (orbTransforms.length > 0) {
     const orbGeo = new THREE.SphereGeometry(0.6, 8, 6);
     const orbMat = new THREE.MeshStandardMaterial({
-      color: 0xddeeff, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.7,
+      color: 0xc0d4dc,
+      emissive: 0x5080a0,
+      emissiveIntensity: 0.12,
+      roughness: 0.35,
+      metalness: 0.2,
+      transparent: true,
+      opacity: 0.75,
     });
     const orbIM = new THREE.InstancedMesh(orbGeo, orbMat, orbTransforms.length);
     for (let i = 0; i < orbTransforms.length; i++) {
@@ -587,7 +651,7 @@ function scatterFlatMarkers(markerGroup: THREE.Group): void {
   if (grassTransforms.length > 0) {
     const grassGeo = new THREE.PlaneGeometry(0.12, 0.8);
     const grassMat = new THREE.MeshStandardMaterial({
-      color: 0x2d8a4e, roughness: 0.8, side: THREE.DoubleSide,
+      color: 0x3d4a38, roughness: 0.88, metalness: 0.02, side: THREE.DoubleSide,
     });
     const grassIM = new THREE.InstancedMesh(grassGeo, grassMat, grassTransforms.length);
     const _pos = new THREE.Vector3();
@@ -605,10 +669,10 @@ function scatterFlatMarkers(markerGroup: THREE.Group): void {
   }
 
   // Flowers — one InstancedMesh per color
-  const flowerColors = [0xe84393, 0xfd79a8, 0xffeaa7, 0xdfe6e9, 0xa29bfe, 0xff7675];
+  const flowerColors = [0x3a9848, 0x2890b0, 0x88a030, 0x48a888, 0x5098c0, 0x689040];
   const buckets: typeof flowerTransforms[] = flowerColors.map(() => []);
   for (const f of flowerTransforms) {
-    buckets[f.colorIdx].push(f);
+    buckets[f.colorIdx % flowerColors.length].push(f);
   }
   const petalGeo = new THREE.CircleGeometry(0.3, 5);
   const _pos = new THREE.Vector3();
@@ -684,7 +748,7 @@ function scatterCeilingMarkers(markerGroup: THREE.Group, mirrorY: number): void 
     // Rotate so the point faces down
     stalGeo.rotateX(Math.PI);
     const stalMat = new THREE.MeshStandardMaterial({
-      color: 0x5a6a7a, roughness: 0.7, metalness: 0.2,
+      color: 0x4a4f52, roughness: 0.72, metalness: 0.25,
     });
     const stalIM = new THREE.InstancedMesh(stalGeo, stalMat, stalactiteTransforms.length);
     for (let i = 0; i < stalactiteTransforms.length; i++) {
@@ -700,7 +764,7 @@ function scatterCeilingMarkers(markerGroup: THREE.Group, mirrorY: number): void 
   }
 
   // Ceiling crystals — glowing octahedrons
-  const crystalColors = [0x66bbff, 0x88ddff, 0xaaeeff, 0x44aadd];
+  const crystalColors = [0x38b8d0, 0x48a8e0, 0x58d0a8, 0x40a0c8];
   const crystalBuckets: typeof crystalTransforms[] = crystalColors.map(() => []);
   for (const c of crystalTransforms) {
     crystalBuckets[c.colorIdx].push(c);
@@ -711,7 +775,7 @@ function scatterCeilingMarkers(markerGroup: THREE.Group, mirrorY: number): void 
     if (bucket.length === 0) continue;
     const mat = new THREE.MeshStandardMaterial({
       color: crystalColors[ci], roughness: 0.15, metalness: 0.5,
-      emissive: crystalColors[ci], emissiveIntensity: 0.15,
+      emissive: crystalColors[ci], emissiveIntensity: 0.14,
     });
     const im = new THREE.InstancedMesh(crystalGeo, mat, bucket.length);
     for (let i = 0; i < bucket.length; i++) {
@@ -739,10 +803,10 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
   const minRadius = 60;
 
   const structMat = new THREE.MeshStandardMaterial({
-    color: 0x7799bb, roughness: 0.4, metalness: 0.6,
+    color: 0x6b6e72, roughness: 0.62, metalness: 0.45,
   });
   const darkMat = new THREE.MeshStandardMaterial({
-    color: 0x556677, roughness: 0.5, metalness: 0.5,
+    color: 0x45484c, roughness: 0.68, metalness: 0.4,
   });
 
   interface StructDef {
@@ -882,7 +946,7 @@ export function createFlatTerrain(): TerrainResult {
   applyVertexColors(geo, "floor");
 
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.85, flatShading: false, vertexColors: true,
+    color: 0xffffff, roughness: 0.68, metalness: 0.05, flatShading: false, vertexColors: true,
   });
   attachGroundGridShader(mat, FLAT_TERRAIN_SIZE / 150);
 
@@ -933,7 +997,7 @@ export function createFlatTerrain(): TerrainResult {
   applyVertexColors(ceilGeo, "ceiling");
 
   const mirrorMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.6, side: THREE.FrontSide, vertexColors: true,
+    color: 0xffffff, roughness: 0.62, metalness: 0.06, side: THREE.FrontSide, vertexColors: true,
   });
   attachGroundGridShader(mirrorMat, FLAT_TERRAIN_SIZE / 100);
 
@@ -1055,7 +1119,13 @@ function scatterSphereMarkers(markerGroup: THREE.Group, geo: THREE.BufferGeometr
   if (orbData.length > 0) {
     const orbGeo = new THREE.SphereGeometry(0.6, 8, 6);
     const orbMat = new THREE.MeshStandardMaterial({
-      color: 0xddeeff, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.7,
+      color: 0xc0d4dc,
+      emissive: 0x5080a0,
+      emissiveIntensity: 0.12,
+      roughness: 0.35,
+      metalness: 0.2,
+      transparent: true,
+      opacity: 0.75,
     });
     const orbIM = new THREE.InstancedMesh(orbGeo, orbMat, orbData.length);
     for (let i = 0; i < orbData.length; i++) {
@@ -1069,9 +1139,9 @@ function scatterSphereMarkers(markerGroup: THREE.Group, geo: THREE.BufferGeometr
     markerGroup.add(orbIM);
   }
 
-  const flowerColors = [0xe84393, 0xfd79a8, 0xffeaa7, 0xdfe6e9, 0xa29bfe, 0xff7675];
+  const flowerColors = [0x3a9848, 0x2890b0, 0x88a030, 0x48a888, 0x5098c0, 0x689040];
   const buckets: typeof flowerData[] = flowerColors.map(() => []);
-  for (const f of flowerData) buckets[f.colorIdx].push(f);
+  for (const f of flowerData) buckets[f.colorIdx % flowerColors.length].push(f);
 
   const petalGeo = new THREE.CircleGeometry(0.3, 5);
   for (let ci = 0; ci < flowerColors.length; ci++) {
@@ -1172,7 +1242,7 @@ export function createSphereTerrain(): TerrainResult {
   applyVertexColors(geo, "sphere");
 
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.85, flatShading: false, side: THREE.DoubleSide, vertexColors: true,
+    color: 0xffffff, roughness: 0.68, metalness: 0.05, flatShading: false, side: THREE.DoubleSide, vertexColors: true,
   });
   attachSphereGridShader(mat, 10);
 

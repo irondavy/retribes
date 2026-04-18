@@ -5,7 +5,7 @@ import { PlayerController } from "./player";
 import { createTerrain, randomSpawn, type TerrainResult } from "./terrain";
 import { initHUD, updateHUD } from "./hud";
 import { initTunePanel, TUNE_PANEL_WIDTH, onTunePanelToggle, onMapChange, updateFPS } from "./tunePanel";
-import { tuning } from "./constants";
+import { tuning, saveTuning } from "./constants";
 import type { MapType } from "./constants";
 import { VisualSystem } from "./visuals";
 import { NetworkManager } from "./network";
@@ -15,9 +15,12 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
+/** Teal atmospheric haze — chromatic mist (less gray-wash than neutral fog) */
+const HALO_FOG_COLOR = 0x6e98b0;
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87ceeb);
-scene.fog = new THREE.Fog(0x87ceeb, 150, 400);
+scene.background = new THREE.Color(HALO_FOG_COLOR);
+scene.fog = new THREE.Fog(HALO_FOG_COLOR, 150, 400);
 
 let panelWidth = TUNE_PANEL_WIDTH;
 
@@ -41,17 +44,17 @@ renderer.domElement.style.left = TUNE_PANEL_WIDTH + "px";
 renderer.domElement.style.top = "0";
 document.body.appendChild(renderer.domElement);
 
-const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+const sun = new THREE.DirectionalLight(0xf4f8f2, 1.75);
 sun.position.set(50, 80, 30);
 sun.castShadow = true;
 scene.add(sun);
 
 // Upward light so the inverted ceiling terrain is visible
-const ceilLight = new THREE.DirectionalLight(0xffffff, 1.0);
+const ceilLight = new THREE.DirectionalLight(0x7cc8e0, 0.82);
 ceilLight.position.set(-30, -80, -20);
 scene.add(ceilLight);
 
-const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+const ambient = new THREE.AmbientLight(0x8eb8c8, 0.6);
 scene.add(ambient);
 
 // Terrain state
@@ -96,13 +99,35 @@ visuals.setTerrainMaterials(currentTerrain.groundMaterial, currentTerrain.ceilin
 
 // Grapple rope visual
 const grappleRopeGeo = new THREE.CylinderGeometry(0.06, 0.06, 1, 5, 1);
-const GRAPPLE_COLOR_TRAVELING = 0xcc6600;
-const GRAPPLE_COLOR_ATTACHED = 0xffcc00;
+const GRAPPLE_COLOR_TRAVELING = 0xc99030;
+const GRAPPLE_COLOR_ATTACHED = 0xe0b060;
 const grappleRopeMat = new THREE.MeshBasicMaterial({ color: GRAPPLE_COLOR_TRAVELING, fog: false });
 const grappleRope = new THREE.Mesh(grappleRopeGeo, grappleRopeMat);
 grappleRope.frustumCulled = false;
 grappleRope.visible = false;
 scene.add(grappleRope);
+
+/** Separate from rope so we can disable depth write (avoids orb being erased by rope/terrain Z). */
+const grappleOrbMat = new THREE.MeshBasicMaterial({
+  color: GRAPPLE_COLOR_TRAVELING,
+  fog: false,
+  depthWrite: false,
+  toneMapped: false,
+});
+
+/** Base radius before `grappleHookVisualScale`; center is offset past the rope cylinder end. */
+const GRAPPLE_ORB_BASE_RADIUS = 0.12;
+
+function createGrappleOrbMesh(mat: THREE.MeshBasicMaterial): THREE.Mesh {
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(GRAPPLE_ORB_BASE_RADIUS, 20, 16), mat);
+  orb.frustumCulled = false;
+  orb.renderOrder = 2;
+  return orb;
+}
+
+const grappleOrb = createGrappleOrbMesh(grappleOrbMat);
+grappleOrb.visible = false;
+scene.add(grappleOrb);
 
 // ─── Multiplayer ─────────────────────────────────────────────────
 
@@ -132,10 +157,10 @@ function switchMap(mapType: MapType): void {
   currentTerrain.ceilingMeshes.visible = tuning.enableCeiling;
 
   if (mapType === "sphere") {
-    scene.fog = new THREE.Fog(0x87ceeb, 200, 600);
+    scene.fog = new THREE.Fog(HALO_FOG_COLOR, 200, 600);
     sun.position.set(0, 0, 0);
   } else {
-    scene.fog = new THREE.Fog(0x87ceeb, 150, 400);
+    scene.fog = new THREE.Fog(HALO_FOG_COLOR, 150, 400);
     sun.position.set(50, 80, 30);
   }
 
@@ -145,6 +170,10 @@ function switchMap(mapType: MapType): void {
 document.addEventListener("keydown", (e) => {
   if (e.code === "KeyR" && document.pointerLockElement) {
     respawn();
+  }
+  if (e.code === "KeyI" && document.pointerLockElement) {
+    tuning.invertY = !tuning.invertY;
+    saveTuning();
   }
 });
 
@@ -213,10 +242,12 @@ function gameLoop(now: number): void {
   remotePlayers.update(dt);
 
   // Update grapple rope visual
-  if (player.grappleAttached || player.grappleTraveling) {
+  if (player.grappleAttached || player.grappleTraveling || player.grappleRetracting) {
     _ropeHand.set(0.15, -1.3, -0.6).applyQuaternion(camera.quaternion);
     _ropeStart.copy(player.position).add(_ropeHand);
-    const ropeEnd = player.grappleTraveling ? player.grappleHookPos : player.grappleAnchor;
+    const ropeEnd = player.grappleAttached && !player.grappleTraveling
+      ? player.grappleAnchor
+      : player.grappleHookPos;
     _ropeMid.addVectors(_ropeStart, ropeEnd).multiplyScalar(0.5);
     _ropeAxis.subVectors(ropeEnd, _ropeStart);
     const len = _ropeAxis.length();
@@ -226,10 +257,28 @@ function gameLoop(now: number): void {
     if (len > 0.01) {
       grappleRope.quaternion.setFromUnitVectors(_UP, _ropeAxis.normalize());
     }
-    grappleRopeMat.color.setHex(player.grappleAttached ? GRAPPLE_COLOR_ATTACHED : GRAPPLE_COLOR_TRAVELING);
+    const ropeHex =
+      player.grappleAttached && !player.grappleRetracting ? GRAPPLE_COLOR_ATTACHED : GRAPPLE_COLOR_TRAVELING;
+    grappleRopeMat.color.setHex(ropeHex);
+    grappleOrbMat.color.setHex(ropeHex);
     grappleRope.visible = true;
+
+    const orbScale = tuning.grappleHookVisualScale;
+    grappleOrb.scale.setScalar(orbScale);
+    const outward = _ropeAxis.subVectors(ropeEnd, _ropeStart);
+    const outLen = outward.length();
+    if (outLen > 0.01) {
+      outward.multiplyScalar(1 / outLen);
+      // Rope cylinder radius 0.06 + scaled orb radius so the sphere sits past the end cap.
+      const pastCap = 0.06 + GRAPPLE_ORB_BASE_RADIUS * orbScale;
+      grappleOrb.position.copy(ropeEnd).addScaledVector(outward, pastCap);
+    } else {
+      grappleOrb.position.copy(ropeEnd);
+    }
+    grappleOrb.visible = true;
   } else {
     grappleRope.visible = false;
+    grappleOrb.visible = false;
   }
 
   // Toggle markers / ceiling visibility
