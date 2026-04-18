@@ -731,8 +731,8 @@ function createFloatingStructures(mirrorY: number): { group: THREE.Group; bounds
   const structGroup = new THREE.Group();
   const bounds: StructureBounds[] = [];
   const midY = mirrorY / 2;
-  const floorClearance = 140; // stay above tallest terrain peaks
-  const ceilClearance = 140;  // stay below ceiling terrain
+  const floorClearance = 40;
+  const ceilClearance = 40;
   const yMin = floorClearance;
   const yMax = mirrorY - ceilClearance;
   const mapHalf = FLAT_TERRAIN_SIZE / 2 * 0.8;
