@@ -46,11 +46,99 @@ type Section = {
   sliders: SliderDef[];
 };
 
+const TIPS: Partial<Record<keyof GameTuning, string>> = {
+  gravity: "Downward acceleration in m/s². Higher = heavier, faster falls.",
+  walkSpeed: "Max speed while walking (not skiing) in m/s.",
+  skiFriction: "Friction coefficient while skiing. Lower = more slippery.",
+  groundFriction: "Friction coefficient while walking. Higher = stop faster.",
+  skiSteerFactor: "How sharply you can turn while skiing. Higher = tighter turns.",
+  airControl: "How much you can steer while airborne. Higher = more responsive.",
+  playerHeight: "Camera eye height above ground in meters.",
+  groundSnapThreshold: "Max distance to snap the player down to the ground each frame.",
+  mouseSensitivity: "Camera rotation speed per mouse pixel.",
+  gravityCamera: "How the camera corrects its roll when gravity changes direction.",
+  gravCamTarget: "What the spring camera tries to align 'up' toward.",
+  gravCamGating: "Whether the spring strength scales with player speed.",
+  gravCamAirborneFallback: "What the spring targets when airborne and using surface-normal mode.",
+  gravityRotSpeed: "How fast the spring camera corrects toward its target orientation.",
+  gravCamDeadZone: "Distance from the gravity midpoint where spring correction pauses.",
+  gravCamVelGate: "Speed (m/s) below which the spring strength ramps toward zero.",
+  gravCamDamping: "Drag applied to camera roll rate in damping mode. Higher = more stable.",
+  jetThrust: "Upward force applied while jetpacking in m/s².",
+  jetEnergyDrain: "Energy consumed per second while jetting.",
+  jetEnergyRegen: "Energy recovered per second while not jetting.",
+  jetForwardBias: "Fraction of thrust diverted forward in your look direction.",
+  jetRegenDelay: "Seconds after releasing jet before energy starts regenerating.",
+  jetStartupTime: "Seconds of delay before thrust reaches full power after pressing jet.",
+  grappleMode: "Winch pulls you straight in; Pendulum lets you swing like Titanfall.",
+  grappleRange: "Max distance the hook can travel before giving up.",
+  grappleSpeed: "Travel speed of the hook projectile in m/s.",
+  grapplePull: "Constant inward pull force in winch mode.",
+  grappleSwingDamping: "Velocity damping per frame while swinging in winch mode (1 = none).",
+  grappleReelSpeed: "How fast you're reeled in toward the anchor in pendulum mode.",
+  grappleConnectBoost: "Instant forward speed added when the hook connects.",
+  grappleConnectUpBias: "Upward impulse added when the hook connects.",
+  grappleAutoDetachRadius: "Distance from anchor at which the grapple auto-releases.",
+  grappleCameraPull: "How much the camera tilts toward the grapple anchor point.",
+  impactThreshold: "Minimum collision speed (m/s) to trigger impact effects.",
+  impactShakeIntensity: "Camera shake strength on hard impacts.",
+  impactFovPunch: "Momentary FOV widening on hard impacts.",
+  impactVignette: "Red edge flash intensity on hard impacts.",
+  enableJetKick: "Sharp initial thrust burst when first pressing jet, then settles to sustained.",
+  enableSlopeFriction: "Ski friction varies with slope — less friction going downhill.",
+  enableSpeedLines: "Radial streak overlay that intensifies at high speeds.",
+  enableFovRateScaling: "FOV widens when accelerating, not just at high speed.",
+  enableLandingAngle: "Landing aligned with a slope gives a speed boost; misaligned penalizes.",
+  coyoteTime: "Milliseconds after leaving ground where you can still jump.",
+  landingSquashFov: "FOV dip on landing — simulates a knee-bend squash.",
+  skiEntryBoost: "Instant speed kick when transitioning from walk/air into skiing.",
+  strafeRollAngle: "Degrees the camera tilts when strafing.",
+  slopeTiltIntensity: "Camera tilts forward/back to reflect the slope you're skiing on.",
+  speedLineIntensity: "Opacity multiplier for the speed-line overlay.",
+  grappleReleaseBoost: "Extra forward speed added when you release the grapple.",
+  landingRecoveryTime: "Seconds of reduced control after a hard landing.",
+  skiCamSmoothing: "Smooths vertical camera jitter while skiing over bumpy terrain.",
+  landingAngleBoost: "Multiplier for the speed bonus when landing aligned downhill.",
+  landingAnglePenalty: "Multiplier for the speed penalty when landing against the slope.",
+  skiGroundAdherence: "Extra downward force that sticks the skier to the terrain surface.",
+  airDrag: "Speed decay in the air. Higher = more drag, slower top speed.",
+  slopeSpeedBonus: "Extra acceleration gained from skiing down steep slopes.",
+  turnInertia: "Velocity resists sudden direction changes. Higher = heavier, more committed turns.",
+  airControlSpeedReduction: "Air control weakens at higher speeds. 0 = no reduction, 1 = full.",
+  landingCameraDip: "Camera dip on landing proportional to impact speed.",
+  chainBonusWindow: "Seconds after a ski-land or grapple-release to chain another for a bonus.",
+  chainBonusMultiplier: "Speed multiplier added per link in a chain combo.",
+  enableToneMapping: "Apply cinematic tone mapping to the rendered image.",
+  enableSkyGradient: "Gradient sky background instead of a flat color.",
+  enableVertexColors: "Show painted terrain vertex colors (biome tinting).",
+  enableHemisphereLight: "Soft ambient light from above and below.",
+  enableFovScaling: "FOV widens at high speed for a sense of velocity.",
+  enableJetParticles: "Particle spray from the jetpack exhaust.",
+  enableSkiParticles: "Dust cloud kicked up while skiing.",
+  enableMarkers: "Colored markers scattered across the terrain for spatial reference.",
+  enableCeiling: "Show the ceiling terrain on the flat dual-gravity map.",
+  toneMappingExposure: "Brightness multiplier when tone mapping is enabled.",
+  hemisphereLightIntensity: "Brightness of the hemisphere ambient light.",
+  fovScaleAmount: "How much the FOV changes per unit of speed.",
+  fogNear: "Distance where fog starts to appear.",
+  fogFar: "Distance where fog fully obscures objects.",
+  cameraFar: "Max render distance. Lower = better performance, less visible terrain.",
+};
+
 const SECTION_STATE_KEY = "retribes_sectionState";
 
 function loadSectionState(): Record<string, boolean> {
   try {
-    return JSON.parse(localStorage.getItem(SECTION_STATE_KEY) || "{}");
+    const state: Record<string, boolean> = JSON.parse(localStorage.getItem(SECTION_STATE_KEY) || "{}");
+    if ("general" in state && !("physics" in state)) {
+      state.physics = state.general;
+      delete state.general;
+    }
+    if ("gravcam" in state && !("camera" in state)) {
+      state.camera = state.gravcam;
+      delete state.gravcam;
+    }
+    return state;
   } catch {
     return {};
   }
@@ -109,42 +197,49 @@ const GRAPPLE_MODES: { value: string; label: string }[] = [
 
 const SECTIONS: Section[] = [
   {
-    id: "general",
-    title: "General",
+    id: "physics",
+    title: "Physics",
     open: true,
     sliders: [
       { key: "gravity", label: "Gravity", min: 5, max: 50, step: 0.5 },
       { key: "walkSpeed", label: "Walk speed", min: 4, max: 30, step: 0.5 },
-      { key: "skiFriction", label: "Ski friction", min: 0.0001, max: 0.02, step: 0.0001, format: (v) => v.toFixed(4) },
       { key: "groundFriction", label: "Ground friction (walk)", min: 0.02, max: 0.5, step: 0.01 },
-      { key: "skiSteerFactor", label: "Ski steering", min: 0.02, max: 0.25, step: 0.01 },
-      { key: "airControl", label: "Air control", min: 0.005, max: 0.15, step: 0.005, format: (v) => v.toFixed(3) },
-      { key: "playerHeight", label: "Eye height", min: 1.2, max: 2.5, step: 0.05 },
+      { key: "playerHeight", label: "Eye height", min: 1.2, max: 10, step: 0.05 },
       { key: "groundSnapThreshold", label: "Ground snap", min: 0.05, max: 1.5, step: 0.05 },
-      { key: "mouseSensitivity", label: "Mouse sensitivity", min: 0.0005, max: 0.012, step: 0.0001, format: (v) => v.toFixed(4) },
+      { key: "coyoteTime", label: "Coyote time (ms)", min: 0, max: 200, step: 10 },
+      { key: "airControl", label: "Air control", min: 0.005, max: 0.15, step: 0.005, format: (v) => v.toFixed(3) },
+      { key: "airDrag", label: "Air drag", min: 0, max: 0.5, step: 0.01, format: (v: number) => v.toFixed(2) },
+      { key: "airControlSpeedReduction", label: "Air ctrl speed decay", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
+      { key: "turnInertia", label: "Turn inertia", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
     ],
   },
   {
-    id: "gravcam",
-    title: "Gravity Camera",
+    id: "skiing",
+    title: "Skiing",
     open: false,
-    dropdowns: [
-      { key: "gravityCamera", label: "Mode", options: CAMERA_MODES, hints: CAMERA_MODE_HINTS },
-      { key: "gravCamTarget", label: "Target", options: SPRING_TARGETS },
-      { key: "gravCamGating", label: "Gating", options: SPRING_GATINGS },
-      { key: "gravCamAirborneFallback", label: "Airborne fallback", options: SPRING_FALLBACKS },
+    toggles: [
+      { key: "enableSlopeFriction", label: "Slope-relative friction" },
+      { key: "enableLandingAngle", label: "Landing angle matters" },
     ],
     sliders: [
-      { key: "gravityRotSpeed", label: "Spring strength", min: 0.5, max: 10.0, step: 0.1 },
-      { key: "gravCamDeadZone", label: "Dead zone (m)", min: 0, max: 50, step: 1 },
-      { key: "gravCamVelGate", label: "Vel gate threshold", min: 1, max: 30, step: 0.5 },
-      { key: "gravCamDamping", label: "Roll damping", min: 0.5, max: 10, step: 0.1 },
+      { key: "skiFriction", label: "Ski friction", min: 0.0001, max: 0.02, step: 0.0001, format: (v) => v.toFixed(4) },
+      { key: "skiSteerFactor", label: "Ski steering", min: 0.02, max: 0.25, step: 0.01 },
+      { key: "skiEntryBoost", label: "Ski entry boost", min: 0, max: 15, step: 0.5 },
+      { key: "slopeSpeedBonus", label: "Slope speed bonus", min: 0, max: 3, step: 0.1 },
+      { key: "skiGroundAdherence", label: "Ground adherence", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
+      { key: "landingAngleBoost", label: "Landing align boost", min: 0, max: 3, step: 0.1 },
+      { key: "landingAnglePenalty", label: "Landing align penalty", min: 0, max: 3, step: 0.1 },
+      { key: "chainBonusWindow", label: "Chain bonus window (s)", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
+      { key: "chainBonusMultiplier", label: "Chain bonus per link", min: 0, max: 0.2, step: 0.01, format: (v: number) => v.toFixed(2) },
     ],
   },
   {
     id: "jetpack",
     title: "Jetpack",
-    open: true,
+    open: false,
+    toggles: [
+      { key: "enableJetKick", label: "Jet kick (sharp initial burst)" },
+    ],
     sliders: [
       { key: "jetThrust", label: "Thrust", min: 10, max: 80, step: 1 },
       { key: "jetEnergyDrain", label: "Energy drain / s", min: 5, max: 60, step: 1 },
@@ -170,63 +265,68 @@ const SECTIONS: Section[] = [
       { key: "grappleConnectBoost", label: "Connect boost", min: 0, max: 50, step: 1 },
       { key: "grappleConnectUpBias", label: "Connect up bias", min: 0, max: 30, step: 1 },
       { key: "grappleAutoDetachRadius", label: "Auto-detach dist", min: 1, max: 20, step: 1 },
+      { key: "grappleReleaseBoost", label: "Release boost", min: 0, max: 20, step: 1 },
       { key: "grappleCameraPull", label: "Camera pull", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
     ],
   },
   {
-    id: "impact",
-    title: "Impact Feel",
+    id: "landing",
+    title: "Landing & Impact",
     open: false,
     sliders: [
-      { key: "impactThreshold", label: "Threshold", min: 2, max: 30, step: 1 },
-      { key: "impactShakeIntensity", label: "Shake", min: 0, max: 3, step: 0.1 },
-      { key: "impactFovPunch", label: "FOV punch", min: 0, max: 3, step: 0.1 },
-      { key: "impactVignette", label: "Vignette", min: 0, max: 3, step: 0.1 },
+      { key: "landingRecoveryTime", label: "Landing recovery (s)", min: 0, max: 0.5, step: 0.02, format: (v: number) => v.toFixed(2) },
+      { key: "landingSquashFov", label: "Landing squash FOV", min: 0, max: 5, step: 0.1 },
+      { key: "landingCameraDip", label: "Landing camera dip", min: 0, max: 5, step: 0.1 },
+      { key: "impactThreshold", label: "Impact threshold", min: 2, max: 30, step: 1 },
+      { key: "impactShakeIntensity", label: "Impact shake", min: 0, max: 3, step: 0.1 },
+      { key: "impactFovPunch", label: "Impact FOV punch", min: 0, max: 3, step: 0.1 },
+      { key: "impactVignette", label: "Impact vignette", min: 0, max: 3, step: 0.1 },
     ],
   },
   {
-    id: "feel",
-    title: "Feel",
+    id: "camera",
+    title: "Camera",
+    open: false,
+    dropdowns: [
+      { key: "gravityCamera", label: "Gravity mode", options: CAMERA_MODES, hints: CAMERA_MODE_HINTS },
+      { key: "gravCamTarget", label: "Target", options: SPRING_TARGETS },
+      { key: "gravCamGating", label: "Gating", options: SPRING_GATINGS },
+      { key: "gravCamAirborneFallback", label: "Airborne fallback", options: SPRING_FALLBACKS },
+    ],
+    sliders: [
+      { key: "gravityRotSpeed", label: "Spring strength", min: 0.5, max: 10.0, step: 0.1 },
+      { key: "gravCamDeadZone", label: "Dead zone (m)", min: 0, max: 50, step: 1 },
+      { key: "gravCamVelGate", label: "Vel gate threshold", min: 1, max: 30, step: 0.5 },
+      { key: "gravCamDamping", label: "Roll damping", min: 0.5, max: 10, step: 0.1 },
+      { key: "mouseSensitivity", label: "Mouse sensitivity", min: 0.0005, max: 0.012, step: 0.0001, format: (v) => v.toFixed(4) },
+      { key: "strafeRollAngle", label: "Strafe roll (°)", min: 0, max: 8, step: 0.5 },
+      { key: "slopeTiltIntensity", label: "Slope tilt", min: 0, max: 5, step: 0.1 },
+      { key: "skiCamSmoothing", label: "Ski cam smoothing", min: 0, max: 0.95, step: 0.05, format: (v: number) => v.toFixed(2) },
+    ],
+  },
+  {
+    id: "speedfx",
+    title: "Speed Feedback",
     open: false,
     toggles: [
-      { key: "enableJetKick", label: "Jet kick (sharp initial burst)" },
-      { key: "enableSlopeFriction", label: "Slope-relative ski friction" },
       { key: "enableSpeedLines", label: "Speed lines" },
+      { key: "enableFovScaling", label: "Speed FOV" },
       { key: "enableFovRateScaling", label: "FOV rate scaling (accel)" },
-      { key: "enableLandingAngle", label: "Landing angle matters" },
     ],
     sliders: [
-      { key: "coyoteTime", label: "Coyote time (ms)", min: 0, max: 200, step: 10 },
-      { key: "landingSquashFov", label: "Landing squash FOV", min: 0, max: 5, step: 0.1 },
-      { key: "skiEntryBoost", label: "Ski entry boost", min: 0, max: 15, step: 0.5 },
-      { key: "strafeRollAngle", label: "Strafe camera roll (°)", min: 0, max: 8, step: 0.5 },
-      { key: "slopeTiltIntensity", label: "Slope camera tilt", min: 0, max: 5, step: 0.1 },
       { key: "speedLineIntensity", label: "Speed line intensity", min: 0.1, max: 2, step: 0.1 },
-      { key: "grappleReleaseBoost", label: "Grapple release boost", min: 0, max: 20, step: 1 },
-      { key: "landingRecoveryTime", label: "Landing recovery (s)", min: 0, max: 0.5, step: 0.02, format: (v: number) => v.toFixed(2) },
-      { key: "skiCamSmoothing", label: "Ski cam smoothing", min: 0, max: 0.95, step: 0.05, format: (v: number) => v.toFixed(2) },
-      { key: "landingAngleBoost", label: "Landing align boost", min: 0, max: 3, step: 0.1 },
-      { key: "landingAnglePenalty", label: "Landing align penalty", min: 0, max: 3, step: 0.1 },
-      { key: "skiGroundAdherence", label: "Ski ground adherence", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
-      { key: "airDrag", label: "Air drag", min: 0, max: 0.5, step: 0.01, format: (v: number) => v.toFixed(2) },
-      { key: "slopeSpeedBonus", label: "Slope speed bonus", min: 0, max: 3, step: 0.1 },
-      { key: "turnInertia", label: "Turn inertia", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
-      { key: "airControlSpeedReduction", label: "Air ctrl speed decay", min: 0, max: 1, step: 0.05, format: (v: number) => v.toFixed(2) },
-      { key: "landingCameraDip", label: "Landing camera dip", min: 0, max: 5, step: 0.1 },
-      { key: "chainBonusWindow", label: "Chain bonus window (s)", min: 0, max: 5, step: 0.25, format: (v: number) => v.toFixed(2) },
-      { key: "chainBonusMultiplier", label: "Chain bonus per link", min: 0, max: 0.2, step: 0.01, format: (v: number) => v.toFixed(2) },
+      { key: "fovScaleAmount", label: "FOV scale", min: 0.05, max: 0.4, step: 0.01 },
     ],
   },
   {
-    id: "visuals",
-    title: "Visuals",
+    id: "rendering",
+    title: "Rendering",
     open: false,
     toggles: [
       { key: "enableToneMapping", label: "Tone mapping" },
       { key: "enableSkyGradient", label: "Sky gradient" },
       { key: "enableVertexColors", label: "Terrain colors" },
       { key: "enableHemisphereLight", label: "Hemisphere light" },
-      { key: "enableFovScaling", label: "Speed FOV" },
       { key: "enableJetParticles", label: "Jet particles" },
       { key: "enableSkiParticles", label: "Ski dust" },
       { key: "enableMarkers", label: "Terrain markers" },
@@ -235,7 +335,6 @@ const SECTIONS: Section[] = [
     sliders: [
       { key: "toneMappingExposure", label: "Exposure", min: 0.3, max: 2.5, step: 0.05 },
       { key: "hemisphereLightIntensity", label: "Hemi intensity", min: 0.1, max: 1.5, step: 0.05 },
-      { key: "fovScaleAmount", label: "FOV scale", min: 0.05, max: 0.4, step: 0.01 },
       { key: "fogNear", label: "Fog near", min: 20, max: 1000, step: 10 },
       { key: "fogFar", label: "Fog far", min: 100, max: 3000, step: 25 },
       { key: "cameraFar", label: "Render dist", min: 500, max: 4000, step: 50 },
@@ -496,6 +595,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   const mapRow = document.createElement("div");
   mapRow.className = "tune-row";
   mapRow.style.marginBottom = "12px";
+  mapRow.title = "Which terrain to play on.";
   const mapLabel = document.createElement("label");
   const mapName = document.createElement("span");
   mapName.className = "tune-name";
@@ -699,6 +799,8 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
     const name = document.createElement("span");
     name.className = "tune-name";
     name.textContent = def.label;
+    const tip = TIPS[def.key];
+    if (tip) row.title = tip;
     label.appendChild(name);
     label.appendChild(valSpan);
 
@@ -734,6 +836,8 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
   function buildToggleRow(def: ToggleDef, container: HTMLElement): void {
     const row = document.createElement("div");
     row.className = "tune-toggle";
+    const tip = TIPS[def.key];
+    if (tip) row.title = tip;
 
     const name = document.createElement("span");
     name.className = "tune-name";
@@ -779,6 +883,8 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
         const row = document.createElement("div");
         row.className = "tune-row";
         row.dataset.tuningKey = dd.key;
+        const ddTip = TIPS[dd.key];
+        if (ddTip) row.title = ddTip;
         const label = document.createElement("label");
         const name = document.createElement("span");
         name.className = "tune-name";
@@ -827,7 +933,7 @@ export function initTunePanel(player: PlayerController): { initialVisible: boole
       buildSliderRow(def, body);
     }
 
-    if (section.id === "gravcam") {
+    if (section.id === "camera") {
       gravCamBody = body;
     }
 
